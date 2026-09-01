@@ -81,7 +81,7 @@ jobs:
           
           # 克隆官方源码
           git clone --depth 1 -b main \
-            https://github.com/123456789l/cf-manager.git \
+            https://github.com/hefy2027/cf-manager.git \
             tmp_build
           
           # 构建前端

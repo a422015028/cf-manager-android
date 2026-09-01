@@ -6,7 +6,7 @@ on:
       repo_url:
         description: '官方仓库地址'
         required: true
-        default: 'https://github.com/123456789l/cf-manager.git'
+        default: 'https://github.com/hefy2027/cf-manager.git'
       branch:
         description: '官方仓库分支'
         required: true
