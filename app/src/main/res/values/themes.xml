@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CFManager" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">#F38020</item>
+        <item name="colorPrimaryDark">#D96E13</item>
+        <item name="colorAccent">#F38020</item>
+        <item name="android:statusBarColor">#D96E13</item>
+    </style>
+</resources>
