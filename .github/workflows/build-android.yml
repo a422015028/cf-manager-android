@@ -46,11 +46,13 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
+      # ===== 1. 检出当前仓库（Android 项目） =====
       - name: 检出 Android 项目
         uses: actions/checkout@v5
         with:
           path: android-project
 
+      # ===== 2. 克隆 cf-manager 源码 =====
       - name: 克隆 cf-manager 最新源码
         uses: actions/checkout@v5
         with:
@@ -59,6 +61,7 @@ jobs:
           path: cf-manager
           fetch-depth: 1
 
+      # ===== 3. 设置 Node.js =====
       - name: 设置 Node.js 环境
         uses: actions/setup-node@v5
         with:
@@ -66,6 +69,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: cf-manager/frontend/package-lock.json
 
+      # ===== 4. 构建前端 =====
       - name: 构建前端
         working-directory: cf-manager/frontend
         run: |
@@ -74,6 +78,7 @@ jobs:
           echo "=== 前端构建完成 ==="
           ls -lh dist/
 
+      # ===== 5. 构建后端 =====
       - name: 构建后端
         working-directory: cf-manager/backend
         run: |
@@ -82,14 +87,21 @@ jobs:
           echo "=== 后端构建完成 ==="
           ls -lh dist/
 
+      # ===== 6. 准备 Android 版后端 =====
       - name: 准备 Android 后端运行环境
         run: |
           BACKEND_OUT="/tmp/android-backend"
           mkdir -p "$BACKEND_OUT"
+          
+          # 复制编译后的后端代码
           cp -r cf-manager/backend/dist/* "$BACKEND_OUT/"
+          
+          # 复制共享资源
           mkdir -p "$BACKEND_OUT/data"
           cp cf-manager/shared/model-pricing.json "$BACKEND_OUT/data/" 2>/dev/null || true
           cp cf-manager/shared/catalog.schema.json "$BACKEND_OUT/data/" 2>/dev/null || true
+          
+          # 生成 Android 专用 package.json（移除 better-sqlite3）
           node -e "
             const pkg = require('./cf-manager/backend/package.json');
             const deps = { ...pkg.dependencies };
@@ -104,6 +116,7 @@ jobs:
             };
             require('fs').writeFileSync('$BACKEND_OUT/package.json', JSON.stringify(androidPkg, null, 2));
           "
+          
           echo "=== Android package.json ==="
           cat "$BACKEND_OUT/package.json"
 
@@ -117,30 +130,37 @@ jobs:
       - name: 替换 db.js 为 sql.js 兼容实现
         run: |
           BACKEND_OUT="/tmp/android-backend"
+          
           cat > "$BACKEND_OUT/db.js" << 'DBEOF'
           const path = require('path');
           const fs = require('fs');
+          
           let initPromise = null;
           let dbInstance = null;
           let SQL = null;
+          
           const DB_FILENAME = 'cfmanager.db';
+          
           function getDataDir() {
             if (process.env.ANDROID_DATA_DIR) return process.env.ANDROID_DATA_DIR;
             if (process.env.DB_PATH) return path.dirname(process.env.DB_PATH);
             return path.join(__dirname, 'data');
           }
+          
           function getDbPath() {
             if (process.env.DB_PATH) return process.env.DB_PATH;
             const dataDir = getDataDir();
             if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
             return path.join(dataDir, DB_FILENAME);
           }
+          
           async function loadSqlJs() {
             if (SQL) return SQL;
             const initSqlJs = require('sql.js');
             SQL = await initSqlJs();
             return SQL;
           }
+          
           async function initDbAsync() {
             if (initPromise) return initPromise;
             initPromise = (async () => {
@@ -163,6 +183,7 @@ jobs:
             })();
             return initPromise;
           }
+          
           function initTables() {
             const stmts = [
               `CREATE TABLE IF NOT EXISTS accounts (
@@ -187,6 +208,7 @@ jobs:
             ];
             for (const s of stmts) dbInstance.run(s);
           }
+          
           function saveDb() {
             if (!dbInstance) return;
             const dbPath = getDbPath();
@@ -195,14 +217,17 @@ jobs:
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(dbPath, Buffer.from(data));
           }
+          
           function getDb() {
             if (!dbInstance) throw new Error('Database not initialized');
             return dbInstance;
           }
+          
           function run(sql, params = []) {
             const stmt = dbInstance.prepare(sql);
             stmt.bind(params); stmt.step(); stmt.free(); saveDb();
           }
+          
           function get(sql, params = []) {
             const stmt = dbInstance.prepare(sql);
             stmt.bind(params);
@@ -211,6 +236,7 @@ jobs:
             stmt.free();
             return r;
           }
+          
           function all(sql, params = []) {
             const stmt = dbInstance.prepare(sql);
             stmt.bind(params);
@@ -219,6 +245,7 @@ jobs:
             stmt.free();
             return rows;
           }
+          
           function prepare(sql) {
             const stmt = dbInstance.prepare(sql);
             let used = false;
@@ -245,14 +272,20 @@ jobs:
               free() { stmt.free(); }
             };
           }
+          
           module.exports = { initDbAsync, getDb, run, get, all, prepare, saveDb };
           DBEOF
+          
           echo "db.js 已替换"
 
       - name: 修复 index.js 路径并注入 Android 适配
         run: |
           BACKEND_OUT="/tmp/android-backend"
+          
+          # 修复静态文件路径
           sed -i 's|path.join(__dirname, "\.\./public")|path.join(__dirname, "public")|g' "$BACKEND_OUT/index.js"
+          
+          # 在文件开头注入 Android 环境变量处理
           TMPFILE=$(mktemp)
           cat > "$TMPFILE" << 'HEADER'
           // Android 环境适配
@@ -262,6 +295,7 @@ jobs:
           HEADER
           cat "$BACKEND_OUT/index.js" >> "$TMPFILE"
           mv "$TMPFILE" "$BACKEND_OUT/index.js"
+          
           echo "index.js 已修复"
           head -10 "$BACKEND_OUT/index.js"
 
@@ -273,32 +307,49 @@ jobs:
           echo "前端文件已复制"
           ls "$BACKEND_OUT/public/"
 
+      # ===== 7. 下载 Termux Node.js 原生库 =====
       - name: 下载 Termux Node.js 包
         run: |
           NODE_PKG="nodejs_${{ env.TERMUX_NODE_VERSION }}_${{ env.TERMUX_ARCH }}.deb"
           NODE_URL="https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/${NODE_PKG}"
+          
           echo "下载 Node.js: $NODE_URL"
           curl -fSL --retry 3 -o /tmp/nodejs.deb "$NODE_URL"
+          
           mkdir -p /tmp/nodejs-pkg
           dpkg-deb -x /tmp/nodejs.deb /tmp/nodejs-pkg/
-          echo "Node.js 包内容:"
-          find /tmp/nodejs-pkg -name "libnode.so*" -type f
+          
+          echo "=== Node.js 包文件结构 ==="
+          find /tmp/nodejs-pkg -name "node" -type f 2>/dev/null
+          find /tmp/nodejs-pkg -name "libnode.so*" -type f 2>/dev/null
+          echo ""
+          echo "=== bin 目录 ==="
+          find /tmp/nodejs-pkg -path "*/bin/*" -type f 2>/dev/null | head -10
+          echo ""
+          echo "=== lib 目录 .so 文件 ==="
+          find /tmp/nodejs-pkg -name "*.so*" -type f 2>/dev/null | head -20
 
       - name: 下载 Termux bootstrap（依赖库）
         run: |
+          # Termux bootstrap 官方下载地址（termux-packages 仓库）
           BOOTSTRAP_TAG="bootstrap-2025.03.16-r1+apt-android-7"
           BOOTSTRAP_URL="https://github.com/termux/termux-packages/releases/download/${BOOTSTRAP_TAG}/bootstrap-aarch64.zip"
+          
           echo "下载 Termux bootstrap: $BOOTSTRAP_URL"
+          
           if curl -fSL --retry 3 -o /tmp/bootstrap.zip "$BOOTSTRAP_URL"; then
             echo "✓ Bootstrap 下载成功"
           else
             echo "✗ 官方地址下载失败，尝试备用镜像..."
+            # 备用：用 termux-play-store 的版本
             MIRROR_URL="https://github.com/termux-play-store/termux-packages/releases/download/bootstrap-2026.01.22-r3/bootstrap-aarch64.zip"
             curl -fSL --retry 3 -o /tmp/bootstrap.zip "$MIRROR_URL"
             echo "✓ 备用镜像下载成功"
           fi
+          
           mkdir -p /tmp/bootstrap
           cd /tmp/bootstrap && unzip -q /tmp/bootstrap.zip
+          
           echo "Bootstrap 库文件:"
           find /tmp/bootstrap -name "*.so*" -type f | head -20
 
@@ -306,26 +357,48 @@ jobs:
         run: |
           JNI_DIR="/tmp/jniLibs/arm64-v8a"
           mkdir -p "$JNI_DIR"
-          NODE_SO=$(find /tmp/nodejs-pkg -name "libnode.so*" -type f | head -1)
-          if [ -n "$NODE_SO" ]; then
-            cp "$NODE_SO" "$JNI_DIR/libnode.so"
-            echo "✓ libnode.so"
+          
+          # 找 node 可执行文件（可能是 bin/node，也可能是 libnode.so）
+          NODE_BIN=""
+          # 先找 bin/node
+          NODE_BIN=$(find /tmp/nodejs-pkg -name "node" -type f -path "*/bin/*" 2>/dev/null | head -1)
+          if [ -z "$NODE_BIN" ]; then
+            # 再找 libnode.so
+            NODE_BIN=$(find /tmp/nodejs-pkg -name "libnode.so*" -type f 2>/dev/null | head -1)
+          fi
+          
+          if [ -n "$NODE_BIN" ]; then
+            cp "$NODE_BIN" "$JNI_DIR/libnode.so"
+            chmod 755 "$JNI_DIR/libnode.so"
+            echo "✓ libnode.so (from: $NODE_BIN)"
+            file "$JNI_DIR/libnode.so"
           else
-            echo "✗ 未找到 libnode.so！"
+            echo "✗ 未找到 Node.js 可执行文件！"
+            echo "nodejs-pkg 内容:"
+            find /tmp/nodejs-pkg -type f | head -50
             exit 1
           fi
+          
+          # 复制 Node.js 自带的 .so 依赖
+          find /tmp/nodejs-pkg -name "*.so*" -type f 2>/dev/null | while read sofile; do
+            basename=$(basename "$sofile")
+            # 跳过已经复制过的 libnode
+            if [[ "$basename" == libnode* ]]; then continue; fi
+            cp "$sofile" "$JNI_DIR/$basename"
+            echo "✓ $basename (from nodejs pkg)"
+          done
+          
+          # 复制 bootstrap 里的依赖库（按 NodeService.kt 的命名映射）
           declare -A MAP=(
             ["libc++_shared.so"]="libc++_shared.so"
             ["libcares.so"]="libcares.so"
             ["libcrypto.so.3"]="libcrypto3.so"
             ["libssl.so.3"]="libssl3.so"
-            ["libicui18n.so.78"]="libicui18n78.so"
-            ["libicuuc.so.78"]="libicuuc78.so"
-            ["libicudata.so.78"]="libicudata78.so"
             ["libz.so.1"]="libz1.so"
             ["libffi.so"]="libffi.so"
             ["libsqlite3.so"]="libsqlite3.so"
           )
+          
           for src in "${!MAP[@]}"; do
             dst="${MAP[$src]}"
             found=$(find /tmp/bootstrap -name "$src" -type f 2>/dev/null | head -1)
@@ -340,25 +413,47 @@ jobs:
               echo "⚠ 未找到 $src"
             fi
           done
+          
+          # 动态查找 ICU 库（版本号可能变化）
+          ICU_LIBS=$(find /tmp/bootstrap -name "libicu*.so*" -type f 2>/dev/null)
+          if [ -n "$ICU_LIBS" ]; then
+            echo ""
+            echo "=== ICU 库 ==="
+            echo "$ICU_LIBS"
+            # 复制并创建带版本号后缀的命名
+            for icu in $ICU_LIBS; do
+              name=$(basename "$icu")
+              cp "$icu" "$JNI_DIR/$name"
+              echo "✓ $name"
+            done
+          fi
+          
           echo ""
-          echo "=== 最终 jniLibs ==="
+          echo "=== 最终 jniLibs 列表 ==="
           ls -lh "$JNI_DIR/"
 
+      # ===== 8. 组装 Android 项目资源 =====
       - name: 将资源复制到 Android 项目
         run: |
           DIR="$GITHUB_WORKSPACE/android-project"
+          
+          # 复制后端到 assets
           ASSETS="$DIR/app/src/main/assets/backend"
           rm -rf "$ASSETS"
           mkdir -p "$ASSETS"
           cp -a /tmp/android-backend/. "$ASSETS/"
+          
+          # 复制原生库
           JNI="$DIR/app/src/main/jniLibs"
           rm -rf "$JNI"
           mkdir -p "$JNI/arm64-v8a"
           cp /tmp/jniLibs/arm64-v8a/* "$JNI/arm64-v8a/"
+          
           echo "=== 资源组装完成 ==="
           echo "后端文件数: $(find $ASSETS -type f | wc -l)"
           echo "原生库: $(ls $JNI/arm64-v8a/ | wc -l) 个"
 
+      # ===== 9. 设置构建环境 =====
       - name: 设置 JDK 17
         uses: actions/setup-java@v4
         with:
@@ -379,6 +474,7 @@ jobs:
           sdkmanager "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
           sdkmanager "platform-tools"
 
+      # ===== 10. 读取并设置版本号 =====
       - name: 读取版本号
         id: version
         run: |
@@ -387,6 +483,7 @@ jobs:
           else
             VN=$(node -e "console.log(require('./cf-manager/backend/package.json').version)")
           fi
+          
           if [ -n "${{ github.event.inputs.version_code }}" ]; then
             VC="${{ github.event.inputs.version_code }}"
           else
@@ -395,6 +492,7 @@ jobs:
             PATCH=$(echo "$VN" | cut -d. -f3)
             VC=$((MAJOR * 10000 + MINOR * 100 + PATCH))
           fi
+          
           echo "version_name=$VN" >> $GITHUB_OUTPUT
           echo "version_code=$VC" >> $GITHUB_OUTPUT
           echo "版本: $VN ($VC)"
@@ -404,11 +502,14 @@ jobs:
         run: |
           VN="${{ steps.version.outputs.version_name }}"
           VC="${{ steps.version.outputs.version_code }}"
+          
           sed -i "s/versionCode [0-9]\+/versionCode $VC/" app/build.gradle
           sed -i "s/versionName \"[^\"]*\"/versionName \"$VN\"/" app/build.gradle
+          
           echo "已更新版本号"
           grep -E "versionCode|versionName" app/build.gradle
 
+      # ===== 11. 构建 APK（自动签名） =====
       - name: 构建 APK
         working-directory: android-project
         env:
@@ -417,29 +518,36 @@ jobs:
           BUILD_TYPE="${{ github.event.inputs.build_type }}"
           chmod +x gradlew
           ./gradlew assemble${BUILD_TYPE^} --no-daemon --stacktrace
+          
           echo ""
           echo "=== 生成的 APK ==="
           find . -name "*.apk" -type f -exec ls -lh {} \;
 
+      # ===== 12. 整理产物 =====
       - name: 整理并重命名 APK
         id: apk
         run: |
           BT="${{ github.event.inputs.build_type }}"
           VN="${{ steps.version.outputs.version_name }}"
           DIR="$GITHUB_WORKSPACE/android-project"
+          
           APK=$(find "$DIR" -name "*.apk" -type f | grep -i "$BT" | head -1)
           [ -z "$APK" ] && APK=$(find "$DIR" -name "*.apk" -type f | head -1)
           [ -z "$APK" ] && { echo "未找到 APK"; exit 1; }
+          
           NAME="cf-manager-android-${VN}-${BT}.apk"
           PATH_OUT="$GITHUB_WORKSPACE/$NAME"
           cp "$APK" "$PATH_OUT"
+          
           SIZE=$(stat -c%s "$PATH_OUT" 2>/dev/null || echo 0)
+          
           echo "apk_path=$PATH_OUT" >> $GITHUB_OUTPUT
           echo "apk_name=$NAME" >> $GITHUB_OUTPUT
           echo "apk_size=$SIZE" >> $GITHUB_OUTPUT
           echo "APK: $NAME ($SIZE bytes)"
           ls -lh "$PATH_OUT"
 
+      # ===== 13. 验证 APK 签名 =====
       - name: 验证 APK 签名
         if: github.event.inputs.build_type == 'release'
         run: |
@@ -447,6 +555,7 @@ jobs:
           echo "=== 验证 APK 签名 ==="
           $ANDROID_HOME/build-tools/${{ env.ANDROID_BUILD_TOOLS }}/apksigner verify --verbose "$APK" 2>&1 || echo "签名验证命令可能有差异，继续执行"
 
+      # ===== 14. 上传产物 =====
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
@@ -454,6 +563,7 @@ jobs:
           path: ${{ steps.apk.outputs.apk_path }}
           retention-days: 90
 
+      # ===== 15. 发布到 Release =====
       - name: 发布到 GitHub Release
         if: github.event.inputs.create_release == 'true' && github.event.inputs.build_type == 'release'
         uses: softprops/action-gh-release@v2
@@ -485,6 +595,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ===== 16. 构建总结 =====
       - name: 构建总结
         run: |
           BT="${{ github.event.inputs.build_type }}"
@@ -492,6 +603,7 @@ jobs:
           VC="${{ steps.version.outputs.version_code }}"
           NAME="${{ steps.apk.outputs.apk_name }}"
           SIZE="${{ steps.apk.outputs.apk_size }}"
+          
           if [ "$SIZE" -gt 1048576 ]; then
             S=$(echo "scale=2; $SIZE / 1048576" | bc)
             SIZE_STR="${S} MB"
@@ -500,6 +612,7 @@ jobs:
           else
             SIZE_STR="${SIZE} B"
           fi
+          
           cat >> $GITHUB_STEP_SUMMARY << EOF
           ## 📱 Android APK 构建完成
           
