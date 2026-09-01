@@ -461,6 +461,36 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: 验证/修复 Gradle Wrapper
+        working-directory: android-project
+        run: |
+          # 检查 gradle-wrapper.jar 是否完整
+          if [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            SIZE=$(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0)
+            if [ "$SIZE" -lt 10000 ]; then
+              echo "gradle-wrapper.jar 太小 ($SIZE bytes)，重新生成..."
+              rm -f gradle/wrapper/gradle-wrapper.jar
+            else
+              echo "gradle-wrapper.jar 正常 ($SIZE bytes)"
+            fi
+          fi
+          
+          # 如果 jar 不存在，用 gradle 命令重新生成 wrapper
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "重新生成 Gradle Wrapper..."
+            # 读取 gradle-wrapper.properties 中的版本
+            GRADLE_VERSION=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties | sed 's/.*gradle-\([0-9.]*\)-.*/\1/')
+            echo "Gradle 版本: $GRADLE_VERSION"
+            # 下载并安装 gradle
+            curl -fSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /tmp
+            export PATH="/tmp/gradle-${GRADLE_VERSION}/bin:$PATH"
+            gradle wrapper --gradle-version "$GRADLE_VERSION"
+            echo "Gradle Wrapper 已重新生成"
+          fi
+          
+          chmod +x gradlew
+
       - name: 设置 Android SDK
         uses: android-actions/setup-android@v3
         with:
