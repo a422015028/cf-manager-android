@@ -40,24 +40,27 @@ const catalogSource_1 = require("./models/catalogSource");
 const store_2 = require("./routes/store");
 const app = (0, express_1.default)();
 app.use((0, cors_1.default)({
-    origin: true,
+    origin: true, // Allow all origins (or specify your frontend URL)
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Account-ID'],
     credentials: false,
 }));
 app.use(express_1.default.json({ limit: '100mb' }));
-// Health check — before auth so health checks work without API_SECRET
+// Health check — before auth so Docker healthcheck works without API_SECRET
 app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
 });
-// ---- Static frontend serving ----
-const frontendDir = path_1.default.join(__dirname, 'public');
+// ---- Static frontend serving (Docker all-in-one mode) ----
+// Must be BEFORE authMiddleware so the login page loads without credentials.
+// API routes (/api/*, /v1/*) are registered after authMiddleware and remain protected.
+const frontendDir = path_1.default.join(__dirname, '..', 'public');
 if (fs_1.default.existsSync(frontendDir)) {
     app.use((0, compression_1.default)());
     app.use(express_1.default.static(frontendDir, {
         maxAge: '30d',
         immutable: true,
         setHeaders: (res, filePath) => {
+            // index.html should never be cached
             if (filePath.endsWith('index.html')) {
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             }
@@ -65,18 +68,22 @@ if (fs_1.default.existsSync(frontendDir)) {
     }));
     logger_1.appLogger.info(`Serving frontend from ${frontendDir}`);
 }
-// SPA fallback
-if (fs_1.default.existsSync(path_1.default.join(__dirname, 'public'))) {
+// SPA fallback: all non-API, non-v1 GET routes serve index.html.
+// Must be BEFORE authMiddleware so the browser can load frontend pages
+// (e.g. /ai, /dashboard) on a full page reload without an Authorization header.
+// The regex excludes /api/ and /v1/ paths, so protected API routes are unaffected.
+if (fs_1.default.existsSync(path_1.default.join(__dirname, '..', 'public'))) {
     app.get(/^(?!\/api\/|\/v1\/).*/, (_req, res) => {
-        res.sendFile(path_1.default.join(path_1.default.join(__dirname, 'public'), 'index.html'));
+        res.sendFile(path_1.default.join(path_1.default.join(__dirname, '..', 'public'), 'index.html'));
     });
 }
 app.use(auth_1.authMiddleware);
-// External APIs — no responseWrapper
+// External APIs — no responseWrapper, keep original format
+// Mount BEFORE /api middleware to avoid responseWrapper
 app.use('/v1', requestId_1.requestIdMiddleware);
 app.use('/v1', v1Logger_1.v1RequestLogger);
 app.use('/v1', openai_1.default);
-app.use('/v1', v1ErrorHandler_1.v1ErrorHandler);
+app.use('/v1', v1ErrorHandler_1.v1ErrorHandler); // OpenAI-format error handler (before global errorHandler)
 app.use('/v1/browser', externalBrowserRender_1.default);
 // Internal APIs — with responseWrapper
 app.use('/api', apiLogger_1.apiRequestLogger);
@@ -94,7 +101,7 @@ app.use('/api/tunnels', tunnels_1.default);
 app.use('/api/v1', requestId_1.requestIdMiddleware);
 app.use('/api/v1', v1Logger_1.v1RequestLogger);
 app.use('/api/v1', openai_1.default);
-app.use('/api/v1', v1ErrorHandler_1.v1ErrorHandler);
+app.use('/api/v1', v1ErrorHandler_1.v1ErrorHandler); // OpenAI-format error handler (before global errorHandler)
 app.get('/api/quota', async (_req, res, next) => {
     try {
         await (0, quotaTracker_1.syncUsageFromCloudflare)();
@@ -128,10 +135,8 @@ app.get('/api/audit-log/actions', (_req, res, next) => {
     }
 });
 app.use(errorHandler_1.errorHandler);
-
 async function start() {
-    // Initialize database async (for sql.js compatibility)
-    if (typeof db_1.initDbAsync === 'function') {
+        if (typeof db_1.initDbAsync === "function") {
         await db_1.initDbAsync();
     }
     (0, db_1.initDb)();
@@ -151,36 +156,13 @@ async function start() {
     });
     app.listen(config_1.config.port, () => {
         logger_1.appLogger.info(`Server running on port ${config_1.config.port}`);
-        console.log(`[STARTUP] Server running on port ${config_1.config.port}`);
     });
 }
-
-// Save database on exit
-function shutdown() {
-    try {
-        if (typeof db_1.saveDbToDisk === 'function') {
-            db_1.saveDbToDisk();
-            console.log('[SHUTDOWN] Database saved');
-        }
-    } catch (e) {
-        console.error('[SHUTDOWN] Error saving database:', e.message);
-    }
-    process.exit(0);
-}
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
 process.on('uncaughtException', (err) => {
     logger_1.appLogger.error(`[UNCAUGHT] ${err}`);
-    console.error('[UNCAUGHT]', err);
 });
 process.on('unhandledRejection', (err) => {
     logger_1.appLogger.error(`[UNHANDLED_REJECTION] ${err}`);
-    console.error('[UNHANDLED_REJECTION]', err);
 });
-
-start().catch((err) => {
-    logger_1.appLogger.error(`[STARTUP] ${err}`);
-    console.error('[STARTUP]', err);
-});
+start().catch((err) => logger_1.appLogger.error(`[STARTUP] ${err}`));
+//# sourceMappingURL=index.js.map

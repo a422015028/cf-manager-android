@@ -17,7 +17,6 @@
     "ajv": "^8.20.0",
     "ajv-errors": "^3.0.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "^12.10.0",
     "cloudflare": "^6.3.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
@@ -30,13 +29,12 @@
     "node-cron": "^4.2.1",
     "node-fetch": "^2.7.0",
     "socks-proxy-agent": "^10.1.0",
-    "sql.js": "^1.14.2",
     "winston": "^3.19.0",
-    "winston-daily-rotate-file": "^5.0.0"
+    "winston-daily-rotate-file": "^5.0.0",
+    "sql.js": "^1.14.2"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
