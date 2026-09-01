@@ -39,8 +39,6 @@ env:
   NODE_VERSION: '22'
   ANDROID_COMPILE_SDK: '34'
   ANDROID_BUILD_TOOLS: '34.0.0'
-  TERMUX_NODE_VERSION: '26.4.0-1'
-  TERMUX_ARCH: 'aarch64'
 
 jobs:
   build-apk:
@@ -307,450 +305,16 @@ jobs:
           echo "前端文件已复制"
           ls "$BACKEND_OUT/public/"
 
-      # ===== 7. 下载 Termux Node.js 原生库 =====
-      - name: 下载 Termux Node.js 包
+      # ===== 7. 组装 Android 项目资源（静态 jniLibs + 生成 SONAME 映射） =====
+      - name: jniLibs 必备文件校验 & 生成 SONAME 映射 & 组装资源
         run: |
-          NODE_PKG="nodejs_${{ env.TERMUX_NODE_VERSION }}_${{ env.TERMUX_ARCH }}.deb"
-          NODE_URL="https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/${NODE_PKG}"
-          
-          echo "下载 Node.js: $NODE_URL"
-          curl -fSL --retry 3 -o /tmp/nodejs.deb "$NODE_URL"
-          
-          mkdir -p /tmp/nodejs-pkg
-          dpkg-deb -x /tmp/nodejs.deb /tmp/nodejs-pkg/
-          
-          echo "=== Node.js 包文件结构 ==="
-          find /tmp/nodejs-pkg -name "node" -type f 2>/dev/null
-          find /tmp/nodejs-pkg -name "libnode.so*" -type f 2>/dev/null
-          echo ""
-          echo "=== bin 目录 ==="
-          find /tmp/nodejs-pkg -path "*/bin/*" -type f 2>/dev/null | head -10
-          echo ""
-          echo "=== lib 目录 .so 文件 ==="
-          find /tmp/nodejs-pkg -name "*.so*" -type f 2>/dev/null | head -20
+          set -euo pipefail
+          DIR="$GITHUB_WORKSPACE/android-project"
+          JNI="$DIR/app/src/main/jniLibs/arm64-v8a"
+          ASSETS="$DIR/app/src/main/assets/backend"
 
-      - name: 下载 Termux bootstrap（依赖库）
-        run: |
-          # Termux bootstrap 官方下载地址（termux-packages 仓库）
-          BOOTSTRAP_TAG="bootstrap-2025.03.16-r1+apt-android-7"
-          BOOTSTRAP_URL="https://github.com/termux/termux-packages/releases/download/${BOOTSTRAP_TAG}/bootstrap-aarch64.zip"
-          
-          echo "下载 Termux bootstrap: $BOOTSTRAP_URL"
-          
-          if curl -fSL --retry 3 -o /tmp/bootstrap.zip "$BOOTSTRAP_URL"; then
-            echo "✓ Bootstrap 下载成功"
-          else
-            echo "✗ 官方地址下载失败，尝试备用镜像..."
-            # 备用：用 termux-play-store 的版本
-            MIRROR_URL="https://github.com/termux-play-store/termux-packages/releases/download/bootstrap-2026.01.22-r3/bootstrap-aarch64.zip"
-            curl -fSL --retry 3 -o /tmp/bootstrap.zip "$MIRROR_URL"
-            echo "✓ 备用镜像下载成功"
-          fi
-          
-          mkdir -p /tmp/bootstrap
-          cd /tmp/bootstrap && unzip -q /tmp/bootstrap.zip
-          
-          echo "=== Bootstrap 所有库文件 ==="
-          find /tmp/bootstrap -name "*.so*" -type f | sort
-
-      # ===== 6.5. 下载 Node.js 运行时依赖的 Termux 包 =====
-      - name: 下载 Node.js 依赖 .deb 包（c-ares/libffi/sqlite/icu）
-        run: |
-          DEPS_POOL="/tmp/deps-pool"
-          mkdir -p "$DEPS_POOL"
-          
-          # 1. 下载 Termux aarch64 Packages 索引，精确解析每个包的最新文件名
-          PKG_IDX="/tmp/Packages"
-          echo "下载 Termux Packages 索引..."
-          if curl -fSL --retry 3 -o "${PKG_IDX}.xz" \
-              "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.xz"; then
-            xz -d -f "${PKG_IDX}.xz"
-            echo "✓ Packages 索引下载成功 ($(wc -l < "$PKG_IDX") 行)"
-          else
-            echo "✗ Packages.xz 失败，尝试 Packages.gz..."
-            curl -fSL --retry 3 -o "${PKG_IDX}.gz" \
-              "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz"
-            gunzip -c "${PKG_IDX}.gz" > "$PKG_IDX"
-            echo "✓ Packages.gz 索引下载成功 ($(wc -l < "$PKG_IDX") 行)"
-          fi
-          
-          # 函数：从 Packages 索引获取包的 Filename 字段
-          get_pkg_filename() {
-            local pkg="$1"
-            awk -v p="$pkg" '
-              /^Package: /{found=($2==p)}
-              found && /^Filename: /{print $2; exit}
-              found && /^$/{exit}
-            ' "$PKG_IDX"
-          }
-          
-          # 函数：下载并解压单个 .deb 到 deps-pool
-          download_pkg() {
-            local pkg="$1"
-            local relpath=$(get_pkg_filename "$pkg")
-            if [ -z "$relpath" ]; then
-              echo "⚠ Packages 索引中未找到 $pkg，跳过"
-              return 1
-            fi
-            local url="https://packages.termux.dev/apt/termux-main/${relpath}"
-            echo "  下载 $pkg: $url"
-            local debfile="/tmp/${pkg}.deb"
-            if curl -fSL --retry 3 -o "$debfile" "$url"; then
-              dpkg-deb -x "$debfile" "$DEPS_POOL"
-              echo "  ✓ $pkg 解压完成"
-              return 0
-            else
-              echo "  ✗ $pkg 下载失败"
-              return 1
-            fi
-          }
-          
-          echo ""
-          echo "=== 开始下载 Node.js 依赖包 ==="
-          # 说明：按 Termux Packages 索引的真实包名。
-          #   - sqlite 的库文件包名在 Termux 里是 sqlite3（非 "sqlite"）
-          #   - ICU 在 Termux 里可能叫 icu / libicu / libicu<version>；全部尝试
-          # 用独立子列表逐个尝试，失败自动跳过（|| true）
-          declare -A PKG_TRY=(
-            ["c-ares"]="c-ares"
-            ["libffi"]="libffi"
-            # Termux/sqlite 组合中，"sqlite" 只是 CLI 程序包，不含运行时 .so；
-            # Debian 惯例运行库包名通常是 libsqlite3-0 / libsqlite3。按：
-            #  ① libsqlite3-0（Debian 风格 soname 包）
-            #  ② libsqlite3（缩写形式）
-            #  ③ sqlite3（Termux 官方文档里出现过）
-            #  ④ sqlite（兜底，虽然不含 .so，但为了不遗漏老版本保留）
-            # 的顺序尝试，并且成功解包后要验证 .so 真的出现，否则继续试。
-            ["sqlite"]="libsqlite3-0 libsqlite3 sqlite3 sqlite"
-            ["icu"]="icu libicu libicui18n libicuuc libicudata"
-            ["libandroid-support"]="libandroid-support"
-          )
-          # 每个逻辑 key 期望在解包后能找到的 .so 前缀（用于 post-unpack 验证）
-          declare -A PKG_EXPECT_SO=(
-            ["sqlite"]="libsqlite3"
-            ["icu"]="libicu"
-            ["c-ares"]="libcares"
-            ["libffi"]="libffi"
-            ["libandroid-support"]="libandroid-support"
-          )
-          for key in "${!PKG_TRY[@]}"; do
-            echo ""
-            echo "─── 搜索 $key ───"
-            expected="${PKG_EXPECT_SO[$key]}"
-            HIT=0
-            for pkg in ${PKG_TRY[$key]}; do
-              # 先统计这个逻辑 key 目前在 deps-pool 里已经有多少 .so
-              before=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
-              if download_pkg "$pkg"; then
-                after=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
-                if [ -z "$expected" ] || [ "$after" -gt "$before" ]; then
-                  echo "  ✓ [$key] 命中包名: $pkg（池中 ${expected}* .so 文件数: $before → $after）"
-                  HIT=1
-                  break
-                else
-                  echo "  ※ $pkg 下载成功但池中未增加 ${expected}* .so（before=$before → after=$after），该包不包含运行时库，继续尝试下一个候选…"
-                fi
-              else
-                echo "  ※ $pkg 未命中/下载失败，尝试下一个候选…"
-              fi
-            done
-            # ======== FALLBACK：显式候选全失败时，Packages 索引全文模糊搜索 ========
-            # 例如 sqlite 的运行库包名在 Termux 索引里可能不是 sqlite3 也不是 libsqlite3-0，
-            # 而是某个变体。扫描所有 Package: 行，找出含 $key 的候选，按 before/after 验证。
-            if [ "$HIT" -eq 0 ] && [ -n "$expected" ]; then
-              echo "  ⇲  显式候选全部未命中，切换 Packages 全文模糊搜索（关键词: $key，核对 .so: ${expected}*）"
-              # 提取 Packages 中含关键词的包名（不区分大小写），去重，按序尝试
-              fuzzy_candidates=$(awk -v kw="$key" '
-                /^Package: /{name=$2; if (tolower(name) ~ tolower(kw)) print name}
-              ' "$PKG_IDX" | sort -u)
-              for pkg in $fuzzy_candidates; do
-                before=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
-                if download_pkg "$pkg"; then
-                  after=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
-                  if [ "$after" -gt "$before" ]; then
-                    echo "  ✓ [$key] 模糊搜索命中包名: $pkg（池中 ${expected}* .so 文件数: $before → $after）"
-                    HIT=1
-                    break
-                  else
-                    echo "  ※ $pkg 下载成功但池中未增加 ${expected}* .so（before=$before → after=$after），该包不包含运行时库，继续…"
-                  fi
-                else
-                  echo "  ※ $pkg 下载失败，跳过"
-                fi
-              done
-            fi
-            if [ "$HIT" -eq 0 ]; then
-              echo "  ✗ [$key] 所有候选 + Packages 模糊搜索均未找到包含 ${expected}* .so 的包！后续 jniLibs 校验阶段将报告缺失。"
-            fi
-          done
-          
-          echo ""
-          echo "=== 依赖池所有 .so 文件 ==="
-          find "$DEPS_POOL" -name "*.so*" \( -type f -o -type l \) | sort
-          echo "（共 $(find "$DEPS_POOL" -name "*.so*" \( -type f -o -type l \) | wc -l) 个）"
-          
-          # 合并进 bootstrap，这样后续 find /tmp/bootstrap 会一并搜到
-          cp -an "$DEPS_POOL"/. /tmp/bootstrap/ 2>/dev/null || true
-          echo "已合并至 /tmp/bootstrap"
-
-      - name: 组装 jniLibs 原生库
-        run: |
-          # GitHub Actions 默认 bash -e（任一非零退出即终止）。
-          # 本步骤包含大量「找不到就是合法分支」的查找/模式匹配，
-          # 因此主动关闭 errexit；真正致命的情况（Node 二进制缺失、
-          # 核心 NEEDED 库未覆盖）会显式 exit 1。
-          set +o errexit
-
-          JNI_DIR="/tmp/jniLibs/arm64-v8a"
-          mkdir -p "$JNI_DIR"
-          NEEDED_FILE="/tmp/node_needed.txt"
-          : > "$NEEDED_FILE"
-
-          # 同时在 bootstrap 与 nodejs-pkg 两个树里搜索
-          # 注意：dpkg 解压后经常是「libz.so.1（symlink）→ libz.so.1.3.1（regular file）」，
-          # 普通 -type f 会把 soname 软链漏掉，所以统一 regular file + symlink 都搜。
-          SEARCH_ROOTS=("/tmp/bootstrap" "/tmp/nodejs-pkg")
-          find_any() {
-            local pattern="$1"
-            for root in "${SEARCH_ROOTS[@]}"; do
-              local found=$(find "$root" -name "$pattern" \( -type f -o -type l \) 2>/dev/null | head -1)
-              if [ -n "$found" ]; then echo "$found"; return 0; fi
-            done
-            return 1
-          }
-
-          # 找 node 可执行文件（可能是 bin/node，也可能是 libnode.so）
-          NODE_BIN=""
-          NODE_BIN=$(find /tmp/nodejs-pkg -name "node" -type f -path "*/bin/*" 2>/dev/null | head -1)
-          if [ -z "$NODE_BIN" ]; then
-            NODE_BIN=$(find /tmp/nodejs-pkg -name "libnode.so*" -type f 2>/dev/null | head -1)
-          fi
-
-          if [ -n "$NODE_BIN" ]; then
-            cp "$NODE_BIN" "$JNI_DIR/libnode.so"
-            chmod 755 "$JNI_DIR/libnode.so"
-            echo "✓ libnode.so (from: $NODE_BIN)"
-            file "$JNI_DIR/libnode.so"
-            echo ""
-            echo "=== Node.js 实际需要的动态库（readelf NEEDED） ==="
-            # 先保存原始输出再打印，避免 tee /dev/stderr 在非 TTY 环境下的行为差异
-            RAW_NEEDED="/tmp/node_needed_raw.txt"
-            readelf -d "$JNI_DIR/libnode.so" 2>/dev/null | grep "NEEDED" > "$RAW_NEEDED" || true
-            cat "$RAW_NEEDED"
-            sed -n 's/.*\[\(.*\)\].*/\1/p' "$RAW_NEEDED" > "$NEEDED_FILE"
-            if [ ! -s "$NEEDED_FILE" ]; then
-              echo "（readelf 未能解析，后续跳过 NEEDED 校验）"
-              echo "__SKIP__" > "$NEEDED_FILE"
-            fi
-          else
-            echo "✗ 未找到 Node.js 可执行文件！"
-            exit 1
-          fi
-
-          echo ""
-          echo "=== 搜索范围 .so 概览 ==="
-          (for r in "${SEARCH_ROOTS[@]}"; do find "$r" -name "*.so*" \( -type f -o -type l \) 2>/dev/null; done) | sort | xargs -I{} basename "{}" | sort -u
-
-          # 复制 Node.js 自带的 .so 依赖
-          echo ""
-          echo "=== nodejs 包中的 .so ==="
-          find /tmp/nodejs-pkg -name "*.so*" -type f 2>/dev/null | while read sofile; do
-            bn=$(basename "$sofile")
-            [[ "$bn" == libnode* ]] && continue
-            cp "$sofile" "$JNI_DIR/$bn"
-            echo "✓ $bn (nodejs pkg)"
-          done
-
-          # 复制依赖库（按 NodeService.kt 的命名映射）
-          # 使用前缀匹配：libcares* 能命中 libcares.so.2 / libcares.so.2.8.1 等
-          declare -A MAP=(
-            ["libc++_shared"]="libc++_shared.so"
-            ["libcares"]="libcares.so"
-            ["libcrypto"]="libcrypto3.so"
-            ["libssl"]="libssl3.so"
-            ["libz"]="libz1.so"
-            ["libffi"]="libffi.so"
-            ["libsqlite3"]="libsqlite3.so"
-            ["libandroid-support"]="libandroid-support.so"
-          )
-
-          echo ""
-          echo "=== 依赖库查找 ==="
-          for prefix in "${!MAP[@]}"; do
-            dst="${MAP[$prefix]}"
-            # 匹配时必须带 .so* 后缀，避免命中 pkg-config（libcares.pc）、
-            # info 文档（libffi.info）、dpkg list（libandroid-support.list）等
-            # 非库文件（find 的前缀模式会把这些东西一起搜出来）。
-            case "$prefix" in
-              libcrypto) found=$(find_any "libcrypto.so.3*") ;;
-              libssl)    found=$(find_any "libssl.so.3*") ;;
-              # bootstrap 里往往只有真正的 regular file libz.so.1.3.1，
-              # 不一定有 libz.so.1 这个 soname symlink，所以放宽到 libz.so.1*
-              libz)      found=$(find_any "libz.so.1*") ;;
-              *)         found=$(find_any "${prefix}.so*") ;;
-            esac
-            if [ -n "$found" ]; then
-              # 防御性检查：后缀真的是 .so 或 .so.xxx（避免万一 find_any 模式漏了）
-              case "$(basename "$found")" in
-                *.so|*.so.*) ;;
-                *) echo "⚠ 忽略非库文件: $found（可能是 .pc/.info/.list 等残留匹配）"; continue ;;
-              esac
-              cp "$found" "$JNI_DIR/$dst"
-              echo "✓ $dst  (src: $(basename "$found"))"
-            else
-              # 注：后续有「NEEDED ↔ SONAME 交叉校验」会按 readelf 真实需求
-              # 做最终裁决，此处仅提示查找结果
-              echo "○ $prefix 未在搜索池中命中（后续校验决定是否致命）"
-            fi
-          done
-
-          # 动态查找 ICU 库（版本号可能变化，如 75、78、79）
-          # 必须重命名为 lib<icuprefix><VERSION>.so（版本嵌在 .so 前），确保
-          # ① Android 包管理器正常提取（要求以 .so 结尾）② NodeService 过滤器能匹配
-          echo ""
-          echo "=== ICU 库查找与重命名 ==="
-          ICU_FOUND=0
-          for r in "${SEARCH_ROOTS[@]}"; do
-            while IFS= read -r icu; do
-              [ -z "$icu" ] && continue
-              src=$(basename "$icu")
-              # ── 过滤：跳过未版本化的 dev 软链（形如 libicudata.so） ──
-              #    .deb 中通常有三种共存：
-              #      libicudata.so       → 开发链接用 soname 软链（点号后无数字）
-              #      libicudata.so.78    → soname 链接（.so 后接主版本号）
-              #      libicudata.so.78.3  → 实际运行库（完整版本）
-              #    第一种若按原名复制会产生 jniLibs/libicudata.so，既不遵循 Android
-              #    提取规则又与重命名产物 libicudata78.so 重复，还会让 SONAME 映射
-              #    出现两条「同一 soname → 不同 jni 文件名」错误。所以直接跳过。
-              if [[ "$src" =~ ^lib(icudata|icui18n|icuuc)\.so$ ]]; then
-                echo "  ※ 跳过未版本化的 dev 软链: $src"
-                continue
-              fi
-              # 从文件名中提取 pattern（icui18n/icuuc/icudata）和主版本号
-              pattern=""
-              version=""
-              if [[ "$src" =~ ^lib(icudata|icui18n|icuuc)([0-9]+)\.so$ ]]; then
-                pattern="lib${BASH_REMATCH[1]}"
-                version="${BASH_REMATCH[2]}"
-                newname="$src"  # 已是兼容格式（理论上搜索源中不会出现）
-              elif [[ "$src" =~ ^lib(icudata|icui18n|icuuc)\.so\.([0-9]+) ]]; then
-                pattern="lib${BASH_REMATCH[1]}"
-                version="${BASH_REMATCH[2]}"
-                newname="${pattern}${version}.so"
-              else
-                echo "  ※ 无法解析版本，跳过: $src"
-                continue  # 原先是「按原名复制」，改为直接跳过，避免命名混乱
-              fi
-              [ -f "$JNI_DIR/$newname" ] && continue
-              cp "$icu" "$JNI_DIR/$newname"
-              echo "✓ $src  →  $newname"
-              ICU_FOUND=1
-            done < <(find "$r" \( -name "libicui18n*" -o -name "libicuuc*" -o -name "libicudata*" \) \( -type f -o -type l \) 2>/dev/null)
-          done
-          if [ "$ICU_FOUND" -eq 0 ]; then
-            echo "✗ 未找到任何 ICU 库！Node.js 大概率无法启动（缺少 Intl 支持）"
-          fi
-
-          # 构建 SONAME → jniLibs 文件名 映射文件，供 NodeService 运行时创建精确软链接
-          SONAME_MAP="/tmp/soname_map.txt"
-          : > "$SONAME_MAP"
-          echo ""
-          echo "=== 生成 SONAME 映射 ==="
-          for f in "$JNI_DIR"/*.so*; do
-            [ -f "$f" ] || continue
-            fname=$(basename "$f")
-            [ "$fname" = "libnode.so" ] && continue
-            # 用 readelf 提取库自身的 SONAME（匹配 [soname] 括号内容，非贪婪）
-            sn=$(readelf -d "$f" 2>/dev/null | sed -n 's/.*SONAME.*\[\([^]]*\)\].*/\1/p')
-            if [ -z "$sn" ]; then
-              # 若无内嵌 SONAME，退化为文件名本身
-              sn="$fname"
-            fi
-            echo "$sn:$fname" >> "$SONAME_MAP"
-            echo "  $sn  →  $fname"
-          done
-          # 也把已知但 SONAME 与拷贝名等价的情况兜底
-          for equiv in "libc++_shared.so:libc++_shared.so" "libandroid-support.so:libandroid-support.so"; do
-            grep -Fq "${equiv%%:*}:" "$SONAME_MAP" 2>/dev/null || echo "$equiv" >> "$SONAME_MAP"
-          done
-          # 确保映射文件在 /tmp/soname_map.txt，便于后续「组装 Android 项目资源」
-          # 步骤直接放进 assets/backend。SONAME_MAP 本身就已经是 /tmp/soname_map.txt，
-          # 所以跳过源/目相同情况（否则 cp 会打警告：are the same file）。
-          SONAME_OUT="/tmp/soname_map.txt"
-          if [ "$(realpath "$SONAME_MAP" 2>/dev/null || echo "$SONAME_MAP")" != "$(realpath "$SONAME_OUT" 2>/dev/null || echo "$SONAME_OUT")" ]; then
-            cp "$SONAME_MAP" "$SONAME_OUT"
-          fi
-          echo "→ 映射文件: $SONAME_OUT ($(wc -l < "$SONAME_OUT") 条)"
-
-          # ========== NEEDED vs SONAME 交叉校验 ==========
-          echo ""
-          echo "=== NEEDED ↔ SONAME 交叉校验 ==="
-          MISSING=()
-          # Android 系统自带、无需打包的库（Bionic 提供）——精确匹配，不能前缀！
-          # 注意：严禁写「libc*」这类通配，会误匹配 libcares/libcrypto/libc++_shared。
-          SYSTEM_LIBS="libc.so:libm.so:libdl.so:liblog.so:libandroid.so:libjnigraphics.so"
-          is_system_lib() {
-            local s="$1"
-            # 1) 精确匹配 SYSTEM_LIBS 列表
-            [[ ":$SYSTEM_LIBS:" == *":$s:"* ]] && return 0
-            # 2) 严格变体匹配（必须含 .so. 或 -<version>.so，避免前缀模糊）
-            #    兼容 libc.so.6 / libc-2.31.so / libm-2.31.so 等 Linux/glibc 风格
-            case "$s" in
-              libc.so.*|libc-*.so)     return 0 ;;
-              libm.so.*|libm-*.so)     return 0 ;;
-              libdl.so.*|libdl-*.so)   return 0 ;;
-              liblog.so.*|liblog-*.so) return 0 ;;
-            esac
-            return 1
-          }
-          # 检查某个 soname 是否被 jniLibs 覆盖：
-          #   1) 存在于 SONAME 映射（soname → 实际文件）
-          #   2) 作为无版本文件直接存在于 jniLibs（如 libc++_shared.so 名字与 soname 相同）
-          # 注意：SONAME 可能包含 "."（如 libssl.so.3），必须用 grep -F 按字面量匹配，
-          #       否则 "." 在正则中是「任意字符」，会误匹配。
-          is_covered() {
-            local sn="$1"
-            grep -Fq "${sn}:" "$SONAME_MAP" 2>/dev/null && return 0
-            ls "$JNI_DIR/${sn}" >/dev/null 2>&1 && return 0
-            return 1
-          }
-          while IFS= read -r needed; do
-            [ -z "$needed" ] && continue
-            [ "$needed" = "__SKIP__" ] && { echo "※ NEEDED 解析失败，跳过校验"; break; }
-            if is_system_lib "$needed"; then
-              echo "  ✓ $needed  (系统库，跳过)"
-              continue
-            fi
-            if is_covered "$needed"; then
-              # 显示覆盖来源（同样 grep -F 避免 soname 中点号被当正则）
-              src=$(grep -F "${needed}:" "$SONAME_MAP" 2>/dev/null | head -1 | cut -d: -f2)
-              [ -n "$src" ] || src="$needed (同文件名)"
-              echo "  ✓ $needed  →  $src"
-            else
-              echo "  ✗ $needed  —— 未在 jniLibs 中找到！"
-              MISSING+=("$needed")
-            fi
-          done < "$NEEDED_FILE"
-
-          if [ "${#MISSING[@]}" -gt 0 ]; then
-            echo ""
-            echo "======================================================================"
-            echo "✗ 严重错误：以下 Node.js 必需的动态库仍未覆盖，APK 安装后 Node 将无法启动："
-            for m in "${MISSING[@]}"; do echo "   · $m"; done
-            echo ""
-            echo "请检查：① 步骤 6.5 对应 Termux 包是否真的下载成功；② 搜索前缀是否匹配。"
-            echo "======================================================================"
-            exit 1
-          fi
-
-          # ========== 用户确认的 11 个必备 jniLibs 文件门禁 ==========
-          # 以下清单是用户最终确认的 jniLibs 目录内必须存在的精确文件名。
-          # 与 NEEDED-SONAME 校验互补：
-          #   · NEEDED-SONAME 校验 ELF 动态链接器层面所有 NEEDED 都满足
-          #   · 本清单保证用户经验确认需要存在的文件（例如 libicudata78.so
-          #     通常不通过 DT_NEEDED 声明，而是 ICU 运行时 dlopen，必须额外存在）
-          echo ""
-          echo "=== 用户确认的必备文件（11 项）核对 ==="
+          # ========== 1. 校验仓库中 jniLibs 的 11 个必备文件齐全 ==========
+          echo "=== 必备 jniLibs 文件核对（11 项，仓库内提交，未齐全直接中止） ==="
           REQUIRED_FILES=(
             "libc++_shared.so"
             "libcares.so"
@@ -764,61 +328,63 @@ jobs:
             "libssl3.so"
             "libz1.so"
           )
-          MISSING_REQUIRED=()
+          MISSING=()
           for f in "${REQUIRED_FILES[@]}"; do
-            if [ -e "$JNI_DIR/$f" ]; then
-              sz=$(stat -c%s "$JNI_DIR/$f" 2>/dev/null || echo 0)
+            target="$JNI/$f"
+            if [ -f "$target" ]; then
+              sz=$(stat -c%s "$target" 2>/dev/null || echo 0)
               echo "  ✓ $f  ($sz bytes)"
             else
-              echo "  ✗ $f  —— 缺失！"
-              MISSING_REQUIRED+=("$f")
+              echo "  ✗ $f  —— 仓库中缺失！请把该文件放入 app/src/main/jniLibs/arm64-v8a/$f 后再提交。"
+              MISSING+=("$f")
             fi
           done
-          if [ "${#MISSING_REQUIRED[@]}" -gt 0 ]; then
+          if [ "${#MISSING[@]}" -gt 0 ]; then
             echo ""
             echo "======================================================================"
-            echo "✗ 必备文件不齐全：以下 jniLibs 文件（用户最终确认清单）缺失："
-            for m in "${MISSING_REQUIRED[@]}"; do echo "   · $m"; done
+            echo "✗ jniLibs 必备文件不齐全。缺 ${#MISSING[@]}/${#REQUIRED_FILES[@]} 个文件："
+            for m in "${MISSING[@]}"; do echo "   · $m"; done
             echo ""
-            echo "共缺 ${#MISSING_REQUIRED[@]} / ${#REQUIRED_FILES[@]} 个，必须补齐后才能构建。"
+            echo "参考清单：README.md / 用户确认的 11 个必备文件。"
             echo "======================================================================"
             exit 1
           fi
-          echo "✓ 必备 11 个文件全部齐全。"
 
+          # ========== 2. 基于仓库 jniLibs 的实际文件，重新生成 SONAME → jni 文件名映射 ==========
+          # 注意：SONAME 映射必须与当前 jniLibs 里的真实文件一一对应，
+          # NodeService 运行时据此创建软链接满足动态链接器的 DT_NEEDED 查找。
           echo ""
-          echo "=== 最终 jniLibs 列表 ($(ls "$JNI_DIR" | wc -l) 个文件) ==="
-          ls -lh "$JNI_DIR/"
-
-      # ===== 8. 组装 Android 项目资源 =====
-      - name: 将资源复制到 Android 项目
-        run: |
-          DIR="$GITHUB_WORKSPACE/android-project"
-          
-          # 复制后端到 assets
-          ASSETS="$DIR/app/src/main/assets/backend"
+          echo "=== 生成 SONAME 映射（readelf -d 每个 jniLibs .so） ==="
+          SONAME_MAP="$ASSETS/soname_map.txt"
+          # 先复制后端（确保 ASSETS 目录存在）
           rm -rf "$ASSETS"
           mkdir -p "$ASSETS"
           cp -a /tmp/android-backend/. "$ASSETS/"
-          
-          # 把构建期生成的 SONAME 映射文件放进 assets/backend，运行时由 NodeService 读取
-          if [ -f /tmp/soname_map.txt ]; then
-            cp /tmp/soname_map.txt "$ASSETS/soname_map.txt"
-            echo "已附加 soname_map.txt："
-            cat "$ASSETS/soname_map.txt"
-          fi
-          
-          # 复制原生库
-          JNI="$DIR/app/src/main/jniLibs"
-          rm -rf "$JNI"
-          mkdir -p "$JNI/arm64-v8a"
-          cp /tmp/jniLibs/arm64-v8a/* "$JNI/arm64-v8a/"
-          
-          echo "=== 资源组装完成 ==="
-          echo "后端文件数: $(find $ASSETS -type f | wc -l)"
-          echo "原生库: $(ls $JNI/arm64-v8a/ | wc -l) 个"
+          # 生成映射：跳过 libnode.so（它是 Node 可执行，不是共享库）
+          : > "$SONAME_MAP"
+          for so in "$JNI"/*.so; do
+            [ -f "$so" ] || continue
+            fname=$(basename "$so")
+            [ "$fname" = "libnode.so" ] && continue
+            sn=$(readelf -d "$so" 2>/dev/null | sed -n 's/.*SONAME.*\[\([^]]*\)\].*/\1/p')
+            if [ -z "$sn" ]; then
+              # 无 SONAME 内嵌字段则退化：文件名本身作为 soname
+              sn="$fname"
+              echo "  ⚠ $fname  无内嵌 SONAME，退化为文件名本身"
+            fi
+            echo "$sn:$fname" >> "$SONAME_MAP"
+            echo "  $sn  →  $fname"
+          done
+          echo "→ SONAME 映射文件: assets/backend/soname_map.txt（共 $(wc -l < "$SONAME_MAP") 条）"
+          cat "$SONAME_MAP"
 
-      # ===== 9. 设置构建环境 =====
+          echo ""
+          echo "=== 资源组装完成 ==="
+          echo "后端文件数: $(find "$ASSETS" -type f | wc -l)"
+          echo "原生库: $(ls "$JNI/" | wc -l) 个"
+
+
+      # ===== 8. 设置构建环境 =====
       - name: 设置 JDK 17
         uses: actions/setup-java@v4
         with:
@@ -869,7 +435,7 @@ jobs:
           sdkmanager "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
           sdkmanager "platform-tools"
 
-      # ===== 10. 读取并设置版本号 =====
+      # ===== 9. 读取并设置版本号 =====
       - name: 读取版本号
         id: version
         run: |
@@ -904,7 +470,7 @@ jobs:
           echo "已更新版本号"
           grep -E "versionCode|versionName" app/build.gradle
 
-      # ===== 10.5. CI 环境：移除阿里云镜像，使用国际仓库 =====
+      # ===== 9.5. CI 环境：移除阿里云镜像，使用国际仓库 =====
       - name: CI 适配 - 移除阿里云 Maven 镜像
         working-directory: android-project
         run: |
@@ -916,7 +482,7 @@ jobs:
           sed -i '/maven\.aliyun\.com/d' build.gradle
           cat build.gradle
 
-      # ===== 11. 构建 APK（自动签名） =====
+      # ===== 10. 构建 APK（自动签名） =====
       - name: 构建 APK
         working-directory: android-project
         env:
@@ -930,7 +496,7 @@ jobs:
           echo "=== 生成的 APK ==="
           find . -name "*.apk" -type f -exec ls -lh {} \;
 
-      # ===== 12. 整理产物 =====
+      # ===== 11. 整理产物 =====
       - name: 整理并重命名 APK
         id: apk
         run: |
@@ -954,7 +520,7 @@ jobs:
           echo "APK: $NAME ($SIZE bytes)"
           ls -lh "$PATH_OUT"
 
-      # ===== 13. 验证 APK 签名 =====
+      # ===== 12. 验证 APK 签名 =====
       - name: 验证 APK 签名
         if: github.event.inputs.build_type == 'release'
         run: |
@@ -962,7 +528,7 @@ jobs:
           echo "=== 验证 APK 签名 ==="
           $ANDROID_HOME/build-tools/${{ env.ANDROID_BUILD_TOOLS }}/apksigner verify --verbose "$APK" 2>&1 || echo "签名验证命令可能有差异，继续执行"
 
-      # ===== 14. 上传产物 =====
+      # ===== 13. 上传产物 =====
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
@@ -970,7 +536,7 @@ jobs:
           path: ${{ steps.apk.outputs.apk_path }}
           retention-days: 90
 
-      # ===== 15. 发布到 Release =====
+      # ===== 14. 发布到 Release =====
       - name: 发布到 GitHub Release
         if: github.event.inputs.create_release == 'true' && github.event.inputs.build_type == 'release'
         uses: softprops/action-gh-release@v2
@@ -997,12 +563,12 @@ jobs:
             ### 包含内容
             - CF Manager 前端（Vue 3）
             - CF Manager 后端（Node.js + Express + sql.js）
-            - Termux Node.js ARM64 运行时
+            - Node.js ARM64 运行时（仓库静态提交）
             - 完全离线运行，无需额外服务器
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ===== 16. 构建总结 =====
+      # ===== 15. 构建总结 =====
       - name: 构建总结
         run: |
           BT="${{ github.event.inputs.build_type }}"
@@ -1037,7 +603,7 @@ jobs:
           ### 📦 包含内容
           - CF Manager 前端 (Vue 3 + Vite)
           - CF Manager 后端 (Node.js + Express + sql.js)
-          - Termux Node.js 运行时 (ARM64)
+          - Node.js 运行时 (ARM64，仓库静态提交)
           
           ### 🚀 使用方式
           1. 在 Artifacts 中下载 APK
