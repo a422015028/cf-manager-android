@@ -407,13 +407,34 @@ jobs:
           
           echo ""
           echo "=== 开始下载 Node.js 依赖包 ==="
-          for pkg in c-ares libffi sqlite icu libandroid-support; do
-            download_pkg "$pkg" || true
+          # 说明：按 Termux Packages 索引的真实包名。
+          #   - sqlite 的库文件包名在 Termux 里是 sqlite3（非 "sqlite"）
+          #   - ICU 在 Termux 里可能叫 icu / libicu / libicu<version>；全部尝试
+          # 用独立子列表逐个尝试，失败自动跳过（|| true）
+          declare -A PKG_TRY=(
+            ["c-ares"]="c-ares"
+            ["libffi"]="libffi"
+            ["sqlite"]="sqlite3 sqlite sqlite-utils"
+            ["icu"]="icu libicu libicui18n libicuuc libicudata"
+            ["libandroid-support"]="libandroid-support"
+          )
+          for key in "${!PKG_TRY[@]}"; do
+            echo ""
+            echo "─── 搜索 $key ───"
+            for pkg in ${PKG_TRY[$key]}; do
+              if download_pkg "$pkg"; then
+                echo "  ✓ [$key] 命中包名: $pkg"
+                break
+              else
+                echo "  ※ $pkg 未命中/下载失败，尝试下一个候选…"
+              fi
+            done
           done
           
           echo ""
           echo "=== 依赖池所有 .so 文件 ==="
-          find "$DEPS_POOL" -name "*.so*" -type f | sort
+          find "$DEPS_POOL" -name "*.so*" \( -type f -o -type l \) | sort
+          echo "（共 $(find "$DEPS_POOL" -name "*.so*" \( -type f -o -type l \) | wc -l) 个）"
           
           # 合并进 bootstrap，这样后续 find /tmp/bootstrap 会一并搜到
           cp -an "$DEPS_POOL"/. /tmp/bootstrap/ 2>/dev/null || true
@@ -421,8 +442,16 @@ jobs:
 
       - name: 组装 jniLibs 原生库
         run: |
+          # GitHub Actions 默认 bash -e（任一非零退出即终止）。
+          # 本步骤包含大量「找不到就是合法分支」的查找/模式匹配，
+          # 因此主动关闭 errexit；真正致命的情况（Node 二进制缺失、
+          # 核心 NEEDED 库未覆盖）会显式 exit 1。
+          set +o errexit
+
           JNI_DIR="/tmp/jniLibs/arm64-v8a"
           mkdir -p "$JNI_DIR"
+          NEEDED_FILE="/tmp/node_needed.txt"
+          : > "$NEEDED_FILE"
 
           # 同时在 bootstrap 与 nodejs-pkg 两个树里搜索
           SEARCH_ROOTS=("/tmp/bootstrap" "/tmp/nodejs-pkg")
@@ -449,7 +478,15 @@ jobs:
             file "$JNI_DIR/libnode.so"
             echo ""
             echo "=== Node.js 实际需要的动态库（readelf NEEDED） ==="
-            readelf -d "$JNI_DIR/libnode.so" 2>/dev/null | grep "NEEDED" || echo "readelf 不可用，跳过"
+            # 先保存原始输出再打印，避免 tee /dev/stderr 在非 TTY 环境下的行为差异
+            RAW_NEEDED="/tmp/node_needed_raw.txt"
+            readelf -d "$JNI_DIR/libnode.so" 2>/dev/null | grep "NEEDED" > "$RAW_NEEDED" || true
+            cat "$RAW_NEEDED"
+            sed -n 's/.*\[\(.*\)\].*/\1/p' "$RAW_NEEDED" > "$NEEDED_FILE"
+            if [ ! -s "$NEEDED_FILE" ]; then
+              echo "（readelf 未能解析，后续跳过 NEEDED 校验）"
+              echo "__SKIP__" > "$NEEDED_FILE"
+            fi
           else
             echo "✗ 未找到 Node.js 可执行文件！"
             exit 1
@@ -497,12 +534,9 @@ jobs:
               cp "$found" "$JNI_DIR/$dst"
               echo "✓ $dst  (src: $(basename "$found"))"
             else
-              case "$prefix" in
-                libsqlite3|libffi|libandroid-support)
-                  echo "⚠ $prefix 未找到（非核心依赖，仅告警）" ;;
-                *)
-                  echo "✗ $prefix 未找到（核心依赖，可能导致 node 无法启动）" ;;
-              esac
+              # 注：后续有「NEEDED ↔ SONAME 交叉校验」会按 readelf 真实需求
+              # 做最终裁决，此处仅提示查找结果
+              echo "○ $prefix 未在搜索池中命中（后续校验决定是否致命）"
             fi
           done
 
@@ -566,6 +600,59 @@ jobs:
           # 复制到 /tmp 便于后续「组装 Android 项目资源」步骤放进 assets/backend
           cp "$SONAME_MAP" /tmp/soname_map.txt
           echo "→ 映射文件: /tmp/soname_map.txt ($(wc -l < /tmp/soname_map.txt) 条)"
+
+          # ========== NEEDED vs SONAME 交叉校验 ==========
+          echo ""
+          echo "=== NEEDED ↔ SONAME 交叉校验 ==="
+          MISSING=()
+          # Android 系统自带、无需打包的库（Bionic 提供）
+          SYSTEM_LIBS="libc.so:libm.so:libdl.so:liblog.so:libandroid.so:libjnigraphics.so"
+          is_system_lib() {
+            local s="$1"
+            [[ ":$SYSTEM_LIBS:" == *":$s:"* ]] && return 0
+            # 兼容变体：libc.so / libc-2.x.so 都是系统库
+            case "$s" in
+              libc*|libm*|libdl*|liblog*|libandroid*) return 0 ;;
+            esac
+            return 1
+          }
+          # 检查某个 soname 是否被 jniLibs 覆盖：
+          #   1) 存在于 SONAME 映射（soname → 实际文件）
+          #   2) 作为无版本文件直接存在于 jniLibs（如 libc++_shared.so 名字与 soname 相同）
+          is_covered() {
+            local sn="$1"
+            grep -q "^${sn}:" "$SONAME_MAP" 2>/dev/null && return 0
+            ls "$JNI_DIR/${sn}" >/dev/null 2>&1 && return 0
+            return 1
+          }
+          while IFS= read -r needed; do
+            [ -z "$needed" ] && continue
+            [ "$needed" = "__SKIP__" ] && { echo "※ NEEDED 解析失败，跳过校验"; break; }
+            if is_system_lib "$needed"; then
+              echo "  ✓ $needed  (系统库，跳过)"
+              continue
+            fi
+            if is_covered "$needed"; then
+              # 显示覆盖来源
+              src=$(grep "^${needed}:" "$SONAME_MAP" 2>/dev/null | head -1 | cut -d: -f2)
+              [ -n "$src" ] || src="$needed (同文件名)"
+              echo "  ✓ $needed  →  $src"
+            else
+              echo "  ✗ $needed  —— 未在 jniLibs 中找到！"
+              MISSING+=("$needed")
+            fi
+          done < "$NEEDED_FILE"
+
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            echo ""
+            echo "======================================================================"
+            echo "✗ 严重错误：以下 Node.js 必需的动态库仍未覆盖，APK 安装后 Node 将无法启动："
+            for m in "${MISSING[@]}"; do echo "   · $m"; done
+            echo ""
+            echo "请检查：① 步骤 6.5 对应 Termux 包是否真的下载成功；② 搜索前缀是否匹配。"
+            echo "======================================================================"
+            exit 1
+          fi
 
           echo ""
           echo "=== 最终 jniLibs 列表 ($(ls "$JNI_DIR" | wc -l) 个文件) ==="
