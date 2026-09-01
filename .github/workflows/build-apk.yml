@@ -8,6 +8,7 @@ on:
       - 'build.gradle'
       - 'settings.gradle'
       - 'gradle.properties'
+      - 'patches/**'
       - '.github/workflows/build-apk.yml'
   pull_request:
     branches: [ main, master ]
@@ -21,6 +22,14 @@ on:
         options:
           - 'debug'
           - 'release'
+      repo_url:
+        description: '官方仓库地址'
+        required: true
+        default: 'https://github.com/hefy2027/cf-manager.git'
+      branch:
+        description: '官方仓库分支'
+        required: true
+        default: 'master'
 
 permissions:
   contents: write
@@ -33,6 +42,10 @@ jobs:
     
     strategy:
       fail-fast: false
+    
+    env:
+      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/hefy2027/cf-manager.git' }}
+      BRANCH: ${{ github.event.inputs.branch || 'master' }}
     
     steps:
       - name: Checkout
@@ -63,40 +76,49 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           echo "✅ Android SDK 已就绪"
 
-      - name: 检查 assets/backend 是否存在
-        id: check_assets
+      - name: 克隆官方源码
         run: |
-          if [ -f "app/src/main/assets/backend/index.js" ] && [ -d "app/src/main/assets/backend/node_modules" ]; then
-            echo "assets_ready=true" >> $GITHUB_OUTPUT
-            echo "✅ assets/backend 已就绪"
-          else
-            echo "assets_ready=false" >> $GITHUB_OUTPUT
-            echo "⚠️  assets/backend 不完整，需要先生成"
+          echo "从 $REPO_URL ($BRANCH) 克隆..."
+          git clone --depth 1 -b "$BRANCH" "$REPO_URL" tmp_build
+          
+          if [ ! -d "tmp_build/backend" ] || [ ! -d "tmp_build/frontend" ]; then
+            echo "❌ 源码结构不正确，缺少 backend 或 frontend 目录"
+            exit 1
           fi
+          
+          echo "✅ 源码克隆完成"
 
-      - name: 准备后端代码（如需要）
-        if: steps.check_assets.outputs.assets_ready == 'false'
+      - name: 构建前端
         run: |
-          echo "从官方源码构建 assets/backend..."
-          
-          # 克隆官方源码
-          git clone --depth 1 -b master \
-            https://github.com/hefy2027/cf-manager.git \
-            tmp_build
-          
-          # 构建前端
           cd tmp_build/frontend
+          echo "安装前端依赖..."
           npm install
+          echo "执行前端构建..."
           npm run build
           
-          # 后端编译 + Android 适配
-          cd ../backend
+          if [ ! -d "dist" ]; then
+            echo "❌ 前端构建失败，dist 目录不存在"
+            exit 1
+          fi
+          echo "✅ 前端构建完成"
+
+      - name: 编译后端 + Android 适配
+        run: |
+          cd tmp_build/backend
           
-          # 安装完整依赖（含 TypeScript）并编译
+          echo "安装后端依赖（含 TypeScript 编译工具）..."
           npm install
+          
+          echo "编译 TypeScript..."
           npm run build
           
-          # 移除 better-sqlite3，添加 sql.js
+          if [ ! -d "dist" ]; then
+            echo "❌ 编译失败，dist 目录不存在"
+            exit 1
+          fi
+          echo "✅ TypeScript 编译完成"
+          
+          echo "移除 better-sqlite3，添加 sql.js..."
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -105,49 +127,72 @@ jobs:
             if (!pkg.dependencies) pkg.dependencies = {};
             pkg.dependencies['sql.js'] = '^1.14.2';
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('✅ package.json 已更新');
           "
           
-          # 重新安装运行时依赖
+          echo "重新安装运行时依赖（sql.js 替换 better-sqlite3）..."
           rm -rf node_modules
           npm install --omit=dev
           
-          # 替换 db.js 为 sql.js 兼容版
+          if [ ! -d "node_modules/sql.js" ]; then
+            echo "❌ sql.js 安装失败"
+            exit 1
+          fi
+          echo "✅ sql.js 已安装"
+          
+          echo "替换数据库层为 sql.js 兼容版..."
           cp "$GITHUB_WORKSPACE/patches/db.js" dist/db.js
           
-          # 修正路径（dist 扁平化后 public 同级）
+          echo "修正前端静态文件路径（dist 扁平化后 public 同级）..."
           sed -i "s|path_1.default.join(__dirname, '..', 'public')|path_1.default.join(__dirname, 'public')|g" dist/index.js
+          sed -i "s|path_1.default.join(path_1.default.join(__dirname, '..', 'public'), 'index.html')|path_1.default.join(__dirname, 'public', 'index.html')|g" dist/index.js
           
-          # 注入 sql.js 异步初始化
+          echo "注入 sql.js 异步初始化（initDbAsync）..."
           node -e "
             const fs = require('fs');
             let content = fs.readFileSync('dist/index.js', 'utf8');
             content = content.replace(
-              /(async function start\(\)\s*\{[\s\S]*?)(\(0, [a-zA-Z_$][\w$]*\.initDb\)\(\);)/,
+              /(async function start\(\)\s*\{[\s\S]*?)(\(0, [a-zA-Z_\$][\w\$]*\.initDb\)\(\);)/,
               '\$1    if (typeof db_1.initDbAsync === \"function\") {\n        await db_1.initDbAsync();\n    }\n    \$2'
             );
             fs.writeFileSync('dist/index.js', content);
+            console.log('✅ 异步初始化已注入');
           "
           
-          # 复制前端产物到 public
+          echo "复制前端构建产物到后端 public 目录..."
           rm -rf public
           cp -r "$GITHUB_WORKSPACE/tmp_build/frontend/dist" public
           
-          # 更新到 assets（dist 内容扁平化到根目录）
-          cd "$GITHUB_WORKSPACE"
+          echo "✅ 后端适配完成"
+
+      - name: 组装 assets/backend
+        run: |
+          echo "清理旧 assets..."
           rm -rf app/src/main/assets/backend
           mkdir -p app/src/main/assets/backend
           
-          # 复制编译后的 JS
+          # 复制编译后的 JS 文件（dist 内容扁平化到 assets/backend 根目录）
+          echo "复制编译后的后端代码..."
           cp -r tmp_build/backend/dist/* app/src/main/assets/backend/
-          # 复制运行时文件
+          
+          # 复制运行时依赖和配置
+          echo "复制运行时依赖..."
           cp -r tmp_build/backend/node_modules app/src/main/assets/backend/
           cp tmp_build/backend/package.json app/src/main/assets/backend/
           cp tmp_build/backend/package-lock.json app/src/main/assets/backend/
+          
           # 复制前端静态文件
+          echo "复制前端静态文件..."
           cp -r tmp_build/backend/public app/src/main/assets/backend/
           
-          rm -rf "$GITHUB_WORKSPACE/tmp_build"
-          echo "✅ assets/backend 准备完成"
+          size=$(du -sh app/src/main/assets/backend | cut -f1)
+          echo "✅ Assets 组装完成（总大小: $size）"
+
+      - name: 清理临时文件
+        if: always()
+        run: |
+          rm -rf tmp_build
+          echo "🧹 临时文件已清理"
 
       - name: 检查 jniLibs 原生库
         run: |
@@ -232,6 +277,7 @@ jobs:
           echo " APK 构建完成!"
           echo "========================================"
           echo ""
+          echo "官方仓库: $REPO_URL ($BRANCH)"
           echo "版本: v${{ steps.version.outputs.version_name }} (${{ steps.version.outputs.version_code }})"
           echo ""
           echo "APK 文件:"

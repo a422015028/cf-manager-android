@@ -54,7 +54,7 @@ jobs:
         id: current_version
         run: |
           if [ -f "app/src/main/assets/backend/version.js" ]; then
-            CURRENT_VERSION=$(grep -oP "version:\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+            CURRENT_VERSION=$(grep -oP "exports\.VERSION\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
           else
             CURRENT_VERSION="unknown"
           fi
@@ -185,7 +185,7 @@ jobs:
       - name: 获取新版本号
         id: new_version
         run: |
-          NEW_VERSION=$(grep -oP "version:\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+          NEW_VERSION=$(grep -oP "exports\.VERSION\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
           if [ "$NEW_VERSION" = "unknown" ]; then
             # 尝试从 package.json 获取
             NEW_VERSION=$(node -e "console.log(require('./app/src/main/assets/backend/package.json').version)" 2>/dev/null || echo "unknown")
