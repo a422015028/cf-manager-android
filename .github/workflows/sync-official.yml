@@ -206,14 +206,13 @@ jobs:
       - name: 直接提交到当前分支
         if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'false'
         run: |
-          git commit -m "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}
+          git commit \
+            -m "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}" \
+            -m "自动同步自 ${{ github.event.inputs.repo_url }} (${{ github.event.inputs.branch }})" \
+            -m "- 前端构建产物已更新" \
+            -m "- 后端已适配 Android (sql.js 替换 better-sqlite3)" \
+            -m "- assets/backend 已更新"
 
-自动同步自 ${{ github.event.inputs.repo_url }} (${{ github.event.inputs.branch }})
-
-- 前端构建产物已更新
-- 后端已适配 Android (sql.js 替换 better-sqlite3)
-- assets/backend 已更新"
-          
           git push
           echo "✅ 已提交到当前分支"
 
