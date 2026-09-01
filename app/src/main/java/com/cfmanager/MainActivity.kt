@@ -9,6 +9,7 @@ import android.view.View
 import android.webkit.*
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 
@@ -33,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         handler = Handler(Looper.getMainLooper())
 
         setupWebView()
+        setupBackPressedHandler()
         startNodeService()
         startServerCheck()
     }
@@ -181,12 +183,17 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("http://127.0.0.1:$SERVER_PORT/")
     }
 
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
+    private fun setupBackPressedHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 
     override fun onDestroy() {
