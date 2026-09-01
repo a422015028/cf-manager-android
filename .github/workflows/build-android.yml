@@ -539,6 +539,18 @@ jobs:
           echo "已更新版本号"
           grep -E "versionCode|versionName" app/build.gradle
 
+      # ===== 10.5. CI 环境：移除阿里云镜像，使用国际仓库 =====
+      - name: CI 适配 - 移除阿里云 Maven 镜像
+        working-directory: android-project
+        run: |
+          echo "=== 移除 settings.gradle 中的阿里云镜像 ==="
+          sed -i '/maven\.aliyun\.com/d' settings.gradle
+          cat settings.gradle
+          echo ""
+          echo "=== 移除 build.gradle 中的阿里云镜像 ==="
+          sed -i '/maven\.aliyun\.com/d' build.gradle
+          cat build.gradle
+
       # ===== 11. 构建 APK（自动签名） =====
       - name: 构建 APK
         working-directory: android-project
