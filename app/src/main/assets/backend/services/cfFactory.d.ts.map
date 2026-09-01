@@ -1,0 +1,1 @@
+{"version":3,"file":"cfFactory.d.ts","sourceRoot":"","sources":["../../src/services/cfFactory.ts"],"names":[],"mappings":"AAAA,OAAO,UAAU,MAAM,YAAY,CAAC;AACpC,OAAO,EAAE,OAAO,EAAE,MAAM,mBAAmB,CAAC;AAI5C,wBAAgB,cAAc,CAAC,OAAO,EAAE,OAAO,GAAG,MAAM,CAAC,MAAM,EAAE,MAAM,CAAC,CAQvE;AAED,wBAAgB,WAAW,CAAC,OAAO,EAAE,OAAO,GAAG,UAAU,CAoBxD;AAED,wBAAgB,gBAAgB,IAAI,IAAI,CAEvC"}
