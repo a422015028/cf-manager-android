@@ -1,0 +1,1 @@
+import{t as e}from"./client-DHHXBdd1.js";var t={get:()=>e.get(`/settings`),clearCache:()=>e.post(`/settings/cache/clear`),testProxy:t=>e.post(`/settings/proxy/test`,{proxy_url:t}),saveResin:t=>e.put(`/settings/resin`,t),testResin:()=>e.post(`/settings/resin/test`)};export{t};

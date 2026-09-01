@@ -1,0 +1,227 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/build-apk.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - 'debug'
+          - 'release'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    name: 构建 APK
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          packages: ''
+
+      - name: 接受 Android SDK 许可
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "✅ Android SDK 已就绪"
+
+      - name: 检查 assets/backend 是否存在
+        id: check_assets
+        run: |
+          if [ -f "app/src/main/assets/backend/index.js" ] && [ -d "app/src/main/assets/backend/node_modules" ]; then
+            echo "assets_ready=true" >> $GITHUB_OUTPUT
+            echo "✅ assets/backend 已就绪"
+          else
+            echo "assets_ready=false" >> $GITHUB_OUTPUT
+            echo "⚠️  assets/backend 不完整，需要先生成"
+          fi
+
+      - name: 准备后端代码（如需要）
+        if: steps.check_assets.outputs.assets_ready == 'false'
+        run: |
+          echo "从官方源码构建 assets/backend..."
+          
+          # 克隆官方源码
+          git clone --depth 1 -b main \
+            https://github.com/123456789l/cf-manager.git \
+            tmp_build
+          
+          # 构建前端
+          cd tmp_build/frontend
+          npm install
+          npm run build
+          
+          # 后端适配
+          cd ../backend
+          
+          # 移除 better-sqlite3，添加 sql.js
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            if (pkg.dependencies) delete pkg.dependencies['better-sqlite3'];
+            if (pkg.devDependencies) delete pkg.devDependencies['@types/better-sqlite3'];
+            if (!pkg.dependencies) pkg.dependencies = {};
+            pkg.dependencies['sql.js'] = '^1.14.2';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          
+          npm install --omit=dev
+          
+          # 替换 db.js
+          cp "$GITHUB_WORKSPACE/patches/db.js" db.js
+          
+          # 修正路径
+          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" index.js
+          
+          # 复制前端产物
+          rm -rf public
+          cp -r "$GITHUB_WORKSPACE/tmp_build/frontend/dist" public
+          
+          # 更新到 assets
+          cd "$GITHUB_WORKSPACE"
+          rm -rf app/src/main/assets/backend
+          mkdir -p app/src/main/assets/backend
+          
+          cd tmp_build/backend
+          ITEMS=(
+            "index.js" "db.js" "config.js" "utils.js" "constants.js" "version.js"
+            "package.json" "package-lock.json"
+            "routes/" "services/" "middleware/" "models/" "data/" "public/" "node_modules/"
+          )
+          
+          for item in "${ITEMS[@]}"; do
+            if [ -e "$item" ]; then
+              cp -r "$item" "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+            fi
+          done
+          
+          rm -rf "$GITHUB_WORKSPACE/tmp_build"
+          echo "✅ assets/backend 准备完成"
+
+      - name: 检查 jniLibs 原生库
+        run: |
+          JNI_DIR="app/src/main/jniLibs/arm64-v8a"
+          REQUIRED_LIBS=(
+            "libc++_shared.so" "libcares.so" "libcrypto3.so" "libffi.so"
+            "libicudata78.so" "libicui18n78.so" "libicuuc78.so" "libnode.so"
+            "libsqlite3.so" "libssl3.so" "libz1.so"
+          )
+          
+          missing=0
+          for lib in "${REQUIRED_LIBS[@]}"; do
+            if [ ! -f "$JNI_DIR/$lib" ]; then
+              echo "❌ 缺失: $lib"
+              missing=1
+            fi
+          done
+          
+          if [ $missing -ne 0 ]; then
+            echo "原生库不完整，请确保 .so 文件在 $JNI_DIR 目录中"
+            exit 1
+          fi
+          
+          echo "✅ 所有原生库就绪"
+          du -sh "$JNI_DIR"
+
+      - name: 授予 Gradle 执行权限
+        run: |
+          chmod +x ./gradlew
+          echo "✅ gradlew 已就绪"
+
+      - name: 缓存 Gradle 依赖
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: 构建 Debug APK
+        if: github.event.inputs.build_type != 'release'
+        run: |
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 构建 Release APK
+        if: github.event.inputs.build_type == 'release'
+        run: |
+          # 签名配置已在 signing/ 目录中（signing.properties + release.jks）
+          # build.gradle 会自动读取并签名
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: 获取版本信息
+        id: version
+        run: |
+          VERSION_NAME=$(grep -oP "versionName\s+['\"]\K[^'\"]+" app/build.gradle | head -1)
+          VERSION_CODE=$(grep -oP "versionCode\s+\K\d+" app/build.gradle | head -1)
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "版本: $VERSION_NAME ($VERSION_CODE)"
+
+      - name: 查找 APK 文件
+        id: find_apk
+        run: |
+          APK_COUNT=$(find app/build/outputs/apk -name "*.apk" | wc -l)
+          echo "找到 $APK_COUNT 个 APK 文件:"
+          find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
+          
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "❌ 未找到 APK 文件，构建失败"
+            exit 1
+          fi
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-manager-android-v${{ steps.version.outputs.version_name }}
+          path: |
+            app/build/outputs/apk/**/*.apk
+          retention-days: 30
+
+      - name: 输出构建结果
+        run: |
+          echo ""
+          echo "========================================"
+          echo " APK 构建完成!"
+          echo "========================================"
+          echo ""
+          echo "版本: v${{ steps.version.outputs.version_name }} (${{ steps.version.outputs.version_code }})"
+          echo ""
+          echo "APK 文件:"
+          find app/build/outputs/apk -name "*.apk" -exec echo "  - {}" \;
+          echo ""
+          echo "产物已上传到 Artifacts，可在 Action 页面下载"

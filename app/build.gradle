@@ -3,10 +3,11 @@ plugins {
     id 'kotlin-android'
 }
 
-def keystorePropertiesFile = rootProject.file("signing/signing.properties")
-def keystoreProperties = new Properties()
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+// 读取签名配置
+def signingPropsFile = rootProject.file("signing/signing.properties")
+def signingProps = new Properties()
+if (signingPropsFile.exists()) {
+    signingProps.load(new FileInputStream(signingPropsFile))
 }
 
 android {
@@ -24,12 +25,15 @@ android {
         }
     }
 
+    // 签名配置（从 signing/signing.properties 读取）
     signingConfigs {
         release {
-            storeFile file(keystoreProperties['storeFile'] ?: '../signing/release.keystore')
-            storePassword keystoreProperties['storePassword'] ?: 'cfmanager2024'
-            keyAlias keystoreProperties['keyAlias'] ?: 'cfmanager'
-            keyPassword keystoreProperties['keyPassword'] ?: 'cfmanager2024'
+            if (signingPropsFile.exists()) {
+                storeFile file(signingProps['storeFile'] ?: 'signing/release.jks')
+                storePassword signingProps['storePassword'] ?: ''
+                keyAlias signingProps['keyAlias'] ?: ''
+                keyPassword signingProps['keyPassword'] ?: ''
+            }
         }
     }
 
@@ -37,7 +41,10 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            // 如果签名配置存在则使用，否则构建未签名的 release APK
+            if (signingPropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
             minifyEnabled false
@@ -64,13 +71,17 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+        // Don't compress Node.js binaries and libraries
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
         }
     }
     
+    // Prevent compression of asset files that need to be executable
+    // Also don't ignore _prefixed files/directories (cloudflare has _shims dir)
     aaptOptions {
         noCompress 'node', '.so', '.wasm', '.dat', '.db'
+        // Default pattern ignores _* dirs; we override to keep them
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
     }
 }

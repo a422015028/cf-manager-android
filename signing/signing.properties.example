@@ -1,0 +1,18 @@
+# 签名配置示例
+# 使用方法：
+# 1. 将此文件复制为 signing.properties
+# 2. 填入你的签名信息
+# 3. 将 keystore 文件放到 signing/ 目录下
+# 4. 构建时会自动读取
+
+# Keystore 文件路径（相对于项目根目录）
+storeFile=signing/release.jks
+
+# Keystore 密码
+storePassword=your_keystore_password
+
+# 密钥别名
+keyAlias=your_key_alias
+
+# 密钥密码
+keyPassword=your_key_password

@@ -1,0 +1,266 @@
+name: Sync with Official
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: '官方仓库地址'
+        required: true
+        default: 'https://github.com/123456789l/cf-manager.git'
+      branch:
+        description: '官方仓库分支'
+        required: true
+        default: 'main'
+      create_pr:
+        description: '是否创建 Pull Request（false 则直接提交到当前分支）'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: 同步官方最新代码
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/src/main/assets/backend/package-lock.json
+
+      - name: 检查环境
+        run: |
+          echo "Node.js: $(node --version)"
+          echo "npm: $(npm --version)"
+          echo "Git: $(git --version)"
+          echo "仓库: ${{ github.event.inputs.repo_url }}"
+          echo "分支: ${{ github.event.inputs.branch }}"
+          echo "创建 PR: ${{ github.event.inputs.create_pr }}"
+
+      - name: 记录当前版本（用于对比）
+        id: current_version
+        run: |
+          if [ -f "app/src/main/assets/backend/version.js" ]; then
+            CURRENT_VERSION=$(grep -oP "version:\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+          else
+            CURRENT_VERSION="unknown"
+          fi
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "当前版本: $CURRENT_VERSION"
+
+      - name: 克隆官方源码
+        run: |
+          echo "从 ${{ github.event.inputs.repo_url }} (${{ github.event.inputs.branch }}) 克隆..."
+          git clone --depth 1 -b "${{ github.event.inputs.branch }}" \
+            "${{ github.event.inputs.repo_url }}" \
+            tmp_build
+          
+          if [ ! -d "tmp_build/backend" ] || [ ! -d "tmp_build/frontend" ]; then
+            echo "❌ 源码结构不正确，缺少 backend 或 frontend 目录"
+            exit 1
+          fi
+          
+          echo "✅ 源码克隆完成"
+
+      - name: 构建前端
+        run: |
+          cd tmp_build/frontend
+          echo "安装前端依赖..."
+          npm install
+          echo "执行前端构建..."
+          npm run build
+          
+          if [ ! -d "dist" ]; then
+            echo "❌ 前端构建失败，dist 目录不存在"
+            exit 1
+          fi
+          echo "✅ 前端构建完成"
+
+      - name: 后端 Android 适配
+        run: |
+          cd tmp_build/backend
+          
+          echo "移除 better-sqlite3，添加 sql.js..."
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            if (pkg.dependencies) {
+              delete pkg.dependencies['better-sqlite3'];
+            }
+            if (pkg.devDependencies) {
+              delete pkg.devDependencies['@types/better-sqlite3'];
+            }
+            if (!pkg.dependencies) pkg.dependencies = {};
+            pkg.dependencies['sql.js'] = '^1.14.2';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('✅ package.json 已更新');
+          "
+          
+          echo "安装后端依赖..."
+          npm install --omit=dev
+          
+          if [ ! -d "node_modules/sql.js" ]; then
+            echo "❌ sql.js 安装失败"
+            exit 1
+          fi
+          echo "✅ sql.js 已安装"
+          
+          echo "替换数据库层为 sql.js 兼容版..."
+          cp "$GITHUB_WORKSPACE/patches/db.js" db.js
+          
+          echo "修正前端静态文件路径..."
+          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" index.js
+          sed -i "s|path.join(path.join(__dirname, 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" index.js
+          
+          echo "复制前端构建产物到后端 public 目录..."
+          rm -rf public
+          cp -r "$GITHUB_WORKSPACE/tmp_build/frontend/dist" public
+          
+          echo "✅ 后端适配完成"
+
+      - name: 更新 assets/backend
+        run: |
+          echo "清理旧 assets..."
+          rm -rf app/src/main/assets/backend
+          mkdir -p app/src/main/assets/backend
+          
+          cd tmp_build/backend
+          
+          ITEMS=(
+            "index.js"
+            "db.js"
+            "config.js"
+            "utils.js"
+            "constants.js"
+            "version.js"
+            "package.json"
+            "package-lock.json"
+            "routes/"
+            "services/"
+            "middleware/"
+            "models/"
+            "data/"
+            "public/"
+            "node_modules/"
+          )
+          
+          count=0
+          for item in "${ITEMS[@]}"; do
+            if [ -e "$item" ]; then
+              cp -r "$item" "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+              count=$((count + 1))
+              echo "  已复制: $item"
+            fi
+          done
+          
+          size=$(du -sh "$GITHUB_WORKSPACE/app/src/main/assets/backend" | cut -f1)
+          echo "✅ Assets 更新完成（共 $count 项，总大小: $size）"
+
+      - name: 获取新版本号
+        id: new_version
+        run: |
+          NEW_VERSION=$(grep -oP "version:\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+          if [ "$NEW_VERSION" = "unknown" ]; then
+            # 尝试从 package.json 获取
+            NEW_VERSION=$(node -e "console.log(require('./app/src/main/assets/backend/package.json').version)" 2>/dev/null || echo "unknown")
+          fi
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "新版本: $NEW_VERSION"
+
+      - name: 检查是否有变化
+        id: check_diff
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git add -A
+          
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ 没有发现变化，已是最新版本"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "📝 检测到变化，准备提交"
+            git diff --cached --stat
+          fi
+
+      - name: 清理临时文件
+        if: always()
+        run: |
+          rm -rf tmp_build
+          echo "🧹 临时文件已清理"
+
+      - name: 直接提交到当前分支
+        if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'false'
+        run: |
+          git commit -m "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}
+
+自动同步自 ${{ github.event.inputs.repo_url }} (${{ github.event.inputs.branch }})
+
+- 前端构建产物已更新
+- 后端已适配 Android (sql.js 替换 better-sqlite3)
+- assets/backend 已更新"
+          
+          git push
+          echo "✅ 已提交到当前分支"
+
+      - name: 创建 Pull Request
+        if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}"
+          body: |
+            ## 自动同步官方最新代码
+            
+            **官方仓库**: ${{ github.event.inputs.repo_url }}
+            **分支**: ${{ github.event.inputs.branch }}
+            **新版本**: v${{ steps.new_version.outputs.new_version }}
+            
+            ### 变更内容
+            - 拉取官方最新源码
+            - 构建前端产物
+            - 后端 Android 适配（sql.js 替换 better-sqlite3）
+            - 更新 `app/src/main/assets/backend/`
+            
+            ### 验证清单
+            - [ ] 本地测试后端服务能否正常启动
+            - [ ] 测试主要功能是否正常
+            - [ ] 确认数据库兼容无问题
+            
+            > 由 GitHub Actions 自动生成
+          branch: sync/official-${{ steps.new_version.outputs.new_version }}
+          base: ${{ github.ref_name }}
+          labels: |
+            sync
+            automated pr
+          commit-message: "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}"
+
+      - name: 输出结果
+        run: |
+          echo ""
+          echo "========================================"
+          echo " 同步完成!"
+          echo "========================================"
+          echo ""
+          echo "新版本: v${{ steps.new_version.outputs.new_version }}"
+          echo "有变化: ${{ steps.check_diff.outputs.has_changes }}"
+          echo "创建 PR: ${{ github.event.inputs.create_pr }}"
+          echo ""
+          if [ "${{ steps.check_diff.outputs.has_changes }}" = "false" ]; then
+            echo "ℹ️ 当前已是最新版本，无需更新"
+          else
+            echo "✅ 代码已更新"
+          fi
