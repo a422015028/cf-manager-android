@@ -55,11 +55,18 @@ jobs:
         run: |
           if [ -f "app/src/main/assets/backend/version.js" ]; then
             CURRENT_VERSION=$(grep -oP "exports\.VERSION\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+            CURRENT_COMMIT=$(grep -oP "exports\.GIT_COMMIT\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "")
           else
             CURRENT_VERSION="unknown"
+            CURRENT_COMMIT=""
           fi
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "当前版本: $CURRENT_VERSION"
+          echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
+          if [ -n "$CURRENT_COMMIT" ]; then
+            echo "当前版本: v$CURRENT_VERSION ($CURRENT_COMMIT)"
+          else
+            echo "当前版本: v$CURRENT_VERSION"
+          fi
 
       - name: 克隆官方源码
         run: |
@@ -186,12 +193,18 @@ jobs:
         id: new_version
         run: |
           NEW_VERSION=$(grep -oP "exports\.VERSION\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "unknown")
+          NEW_COMMIT=$(grep -oP "exports\.GIT_COMMIT\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "")
           if [ "$NEW_VERSION" = "unknown" ]; then
             # 尝试从 package.json 获取
             NEW_VERSION=$(node -e "console.log(require('./app/src/main/assets/backend/package.json').version)" 2>/dev/null || echo "unknown")
           fi
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "新版本: $NEW_VERSION"
+          echo "new_commit=$NEW_COMMIT" >> $GITHUB_OUTPUT
+          if [ -n "$NEW_COMMIT" ]; then
+            echo "新版本: v$NEW_VERSION ($NEW_COMMIT)"
+          else
+            echo "新版本: v$NEW_VERSION"
+          fi
 
       - name: 同步版本号到 APP
         if: steps.new_version.outputs.new_version != 'unknown'
@@ -249,13 +262,21 @@ jobs:
       - name: 直接提交到当前分支
         if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'false'
         run: |
+          NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
+          NEW_COMMIT="${{ steps.new_version.outputs.new_commit }}"
+          if [ -n "$NEW_COMMIT" ]; then
+            TITLE="feat: 同步官方版本 v${NEW_VERSION} (${NEW_COMMIT})"
+          else
+            TITLE="feat: 同步官方版本 v${NEW_VERSION}"
+          fi
+          
           git commit \
-            -m "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}" \
+            -m "$TITLE" \
             -m "自动同步自 ${{ github.event.inputs.repo_url }} (${{ github.event.inputs.branch }})" \
             -m "- 前端构建产物已更新" \
             -m "- 后端已适配 Android (sql.js 替换 better-sqlite3)" \
             -m "- assets/backend 已更新"
-
+          
           git push
           echo "✅ 已提交到当前分支"
 
@@ -263,13 +284,14 @@ jobs:
         if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          title: "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}"
+          title: "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}${{ steps.new_version.outputs.new_commit != '' && format(' ({0})', steps.new_version.outputs.new_commit) || '' }}"
           body: |
             ## 自动同步官方最新代码
             
             **官方仓库**: ${{ github.event.inputs.repo_url }}
             **分支**: ${{ github.event.inputs.branch }}
             **新版本**: v${{ steps.new_version.outputs.new_version }}
+            ${{ steps.new_version.outputs.new_commit != '' && format('**Commit**: `{0}`', steps.new_version.outputs.new_commit) || '' }}
             
             ### 变更内容
             - 拉取官方最新源码
@@ -297,7 +319,13 @@ jobs:
           echo " 同步完成!"
           echo "========================================"
           echo ""
-          echo "新版本: v${{ steps.new_version.outputs.new_version }}"
+          NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
+          NEW_COMMIT="${{ steps.new_version.outputs.new_commit }}"
+          if [ -n "$NEW_COMMIT" ]; then
+            echo "新版本: v${NEW_VERSION} (${NEW_COMMIT})"
+          else
+            echo "新版本: v${NEW_VERSION}"
+          fi
           echo "有变化: ${{ steps.check_diff.outputs.has_changes }}"
           echo "创建 PR: ${{ github.event.inputs.create_pr }}"
           echo ""
