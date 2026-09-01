@@ -188,6 +188,27 @@ jobs:
           size=$(du -sh app/src/main/assets/backend | cut -f1)
           echo "✅ Assets 组装完成（总大小: $size）"
 
+      - name: 清理开发文件（source map + 类型声明）
+        run: |
+          echo "清理 .map 和 .d.ts 文件（运行时不需要）..."
+          
+          before_size=$(du -sb app/src/main/assets/backend | cut -f1)
+          map_count=$(find app/src/main/assets/backend -type f -name "*.map" | wc -l)
+          dts_count=$(find app/src/main/assets/backend -type f -name "*.d.ts" | wc -l)
+          total=$((map_count + dts_count))
+          
+          if [ "$total" -gt 0 ]; then
+            find app/src/main/assets/backend -type f \( -name "*.map" -o -name "*.d.ts" \) -delete
+            after_size=$(du -sb app/src/main/assets/backend | cut -f1)
+            saved_bytes=$((before_size - after_size))
+            saved_kb=$((saved_bytes / 1024))
+            echo "已删除 $total 个开发文件（.map: $map_count, .d.ts: $dts_count），节省 ${saved_kb} KB"
+          else
+            echo "未找到开发文件，无需清理"
+          fi
+          
+          echo "✅ 开发文件清理完成"
+
       - name: 清理临时文件
         if: always()
         run: |
