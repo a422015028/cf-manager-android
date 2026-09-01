@@ -53,7 +53,7 @@ app.get('/api/health', (_req, res) => {
 // ---- Static frontend serving (Docker all-in-one mode) ----
 // Must be BEFORE authMiddleware so the login page loads without credentials.
 // API routes (/api/*, /v1/*) are registered after authMiddleware and remain protected.
-const frontendDir = path_1.default.join(__dirname, '..', 'public');
+const frontendDir = path_1.default.join(__dirname, 'public');
 if (fs_1.default.existsSync(frontendDir)) {
     app.use((0, compression_1.default)());
     app.use(express_1.default.static(frontendDir, {
@@ -72,9 +72,9 @@ if (fs_1.default.existsSync(frontendDir)) {
 // Must be BEFORE authMiddleware so the browser can load frontend pages
 // (e.g. /ai, /dashboard) on a full page reload without an Authorization header.
 // The regex excludes /api/ and /v1/ paths, so protected API routes are unaffected.
-if (fs_1.default.existsSync(path_1.default.join(__dirname, '..', 'public'))) {
+if (fs_1.default.existsSync(path_1.default.join(__dirname, 'public'))) {
     app.get(/^(?!\/api\/|\/v1\/).*/, (_req, res) => {
-        res.sendFile(path_1.default.join(path_1.default.join(__dirname, '..', 'public'), 'index.html'));
+        res.sendFile(path_1.default.join(path_1.default.join(__dirname, 'public'), 'index.html'));
     });
 }
 app.use(auth_1.authMiddleware);
