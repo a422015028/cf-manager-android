@@ -282,7 +282,7 @@ jobs:
 
       - name: 创建 Pull Request
         if: steps.check_diff.outputs.has_changes == 'true' && github.event.inputs.create_pr == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
           title: "feat: 同步官方版本 v${{ steps.new_version.outputs.new_version }}${{ steps.new_version.outputs.new_commit != '' && format(' ({0})', steps.new_version.outputs.new_commit) || '' }}"
           body: |

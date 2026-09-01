@@ -225,7 +225,7 @@ jobs:
           echo "✅ gradlew 已就绪"
 
       - name: 缓存 Gradle 依赖
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: wrapper
 
@@ -263,7 +263,7 @@ jobs:
           fi
 
       - name: 上传 APK 产物
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: cf-manager-android-v${{ steps.version.outputs.version_name }}
           path: |
