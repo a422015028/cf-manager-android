@@ -193,6 +193,36 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "新版本: $NEW_VERSION"
 
+      - name: 同步版本号到 APP
+        if: steps.new_version.outputs.new_version != 'unknown'
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
+          
+          # 提取 GIT_COMMIT
+          GIT_COMMIT=$(grep -oP "exports\.GIT_COMMIT\s*=\s*['\"]\K[^'\"]+" app/src/main/assets/backend/version.js 2>/dev/null || echo "")
+          
+          # 组装 versionName（带 commit 后缀）
+          if [ -n "$GIT_COMMIT" ]; then
+            VERSION_NAME="${NEW_VERSION}-${GIT_COMMIT}"
+          else
+            VERSION_NAME="${NEW_VERSION}"
+          fi
+          
+          # 读取当前 versionCode 并 +1
+          CURRENT_CODE=$(grep -oP "versionCode\s+\K\d+" app/build.gradle)
+          NEW_CODE=$((CURRENT_CODE + 1))
+          
+          echo "当前 versionCode: $CURRENT_CODE → $NEW_CODE"
+          echo "versionName: → $VERSION_NAME"
+          
+          # 更新 versionName
+          sed -i "s/versionName\s\+[\"'][^\"']*[\"']/versionName \"$VERSION_NAME\"/" app/build.gradle
+          
+          # 更新 versionCode
+          sed -i "s/versionCode\s\+[0-9]\+/versionCode $NEW_CODE/" app/build.gradle
+          
+          echo "✅ APP 版本号已同步"
+
       - name: 检查是否有变化
         id: check_diff
         run: |
