@@ -641,11 +641,16 @@ jobs:
           done
           # 也把已知但 SONAME 与拷贝名等价的情况兜底
           for equiv in "libc++_shared.so:libc++_shared.so" "libandroid-support.so:libandroid-support.so"; do
-            grep -q "^${equiv%%:*}:" "$SONAME_MAP" 2>/dev/null || echo "$equiv" >> "$SONAME_MAP"
+            grep -Fq "${equiv%%:*}:" "$SONAME_MAP" 2>/dev/null || echo "$equiv" >> "$SONAME_MAP"
           done
-          # 复制到 /tmp 便于后续「组装 Android 项目资源」步骤放进 assets/backend
-          cp "$SONAME_MAP" /tmp/soname_map.txt
-          echo "→ 映射文件: /tmp/soname_map.txt ($(wc -l < /tmp/soname_map.txt) 条)"
+          # 确保映射文件在 /tmp/soname_map.txt，便于后续「组装 Android 项目资源」
+          # 步骤直接放进 assets/backend。SONAME_MAP 本身就已经是 /tmp/soname_map.txt，
+          # 所以跳过源/目相同情况（否则 cp 会打警告：are the same file）。
+          SONAME_OUT="/tmp/soname_map.txt"
+          if [ "$(realpath "$SONAME_MAP" 2>/dev/null || echo "$SONAME_MAP")" != "$(realpath "$SONAME_OUT" 2>/dev/null || echo "$SONAME_OUT")" ]; then
+            cp "$SONAME_MAP" "$SONAME_OUT"
+          fi
+          echo "→ 映射文件: $SONAME_OUT ($(wc -l < "$SONAME_OUT") 条)"
 
           # ========== NEEDED vs SONAME 交叉校验 ==========
           echo ""

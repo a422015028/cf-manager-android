@@ -90,3 +90,4 @@ lint-results*.html
 
 # Android Profiling
 *.hprof
+cf-manager-source
