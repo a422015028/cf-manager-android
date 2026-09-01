@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
                     NavigationBar {
                         navItems.forEach { item ->
                             NavigationBarItem(
-                                selected = currentRoute.value == item.route,
+                                selected = true,
                                 onClick = {
                                     navigateTo(item.path)
                                     currentRoute.value = item.route
