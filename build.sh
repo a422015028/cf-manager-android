@@ -269,8 +269,8 @@ prepare_backend() {
     
     # 修改 index.js 中的前端静态文件路径（dist 扁平化后从 ../public 改为 ./public）
     log_info "修正前端静态文件路径..."
-    sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" "$TMP_DIR/backend/dist/index.js"
-    sed -i "s|path.join(path.join(__dirname, '..', 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" "$TMP_DIR/backend/dist/index.js"
+    sed -i "s|path_1.default.join(__dirname, '..', 'public')|path_1.default.join(__dirname, 'public')|g" "$TMP_DIR/backend/dist/index.js"
+    sed -i "s|path_1.default.join(path_1.default.join(__dirname, '..', 'public'), 'index.html')|path_1.default.join(__dirname, 'public', 'index.html')|g" "$TMP_DIR/backend/dist/index.js"
     
     # 注入 sql.js 异步初始化
     log_info "注入 sql.js 异步初始化..."

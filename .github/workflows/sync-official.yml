@@ -135,8 +135,8 @@ jobs:
           cp "$GITHUB_WORKSPACE/patches/db.js" dist/db.js
           
           echo "修正前端静态文件路径（dist 扁平化后 public 同级）..."
-          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" dist/index.js
-          sed -i "s|path.join(path.join(__dirname, '..', 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" dist/index.js
+          sed -i "s|path_1.default.join(__dirname, '..', 'public')|path_1.default.join(__dirname, 'public')|g" dist/index.js
+          sed -i "s|path_1.default.join(path_1.default.join(__dirname, '..', 'public'), 'index.html')|path_1.default.join(__dirname, 'public', 'index.html')|g" dist/index.js
           
           echo "注入 sql.js 异步初始化（initDbAsync）..."
           node -e "
