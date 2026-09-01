@@ -350,86 +350,225 @@ jobs:
           mkdir -p /tmp/bootstrap
           cd /tmp/bootstrap && unzip -q /tmp/bootstrap.zip
           
-          echo "Bootstrap 库文件:"
-          find /tmp/bootstrap -name "*.so*" -type f | head -20
+          echo "=== Bootstrap 所有库文件 ==="
+          find /tmp/bootstrap -name "*.so*" -type f | sort
+
+      # ===== 6.5. 下载 Node.js 运行时依赖的 Termux 包 =====
+      - name: 下载 Node.js 依赖 .deb 包（c-ares/libffi/sqlite/icu）
+        run: |
+          DEPS_POOL="/tmp/deps-pool"
+          mkdir -p "$DEPS_POOL"
+          
+          # 1. 下载 Termux aarch64 Packages 索引，精确解析每个包的最新文件名
+          PKG_IDX="/tmp/Packages"
+          echo "下载 Termux Packages 索引..."
+          if curl -fSL --retry 3 -o "${PKG_IDX}.xz" \
+              "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.xz"; then
+            xz -d -f "${PKG_IDX}.xz"
+            echo "✓ Packages 索引下载成功 ($(wc -l < "$PKG_IDX") 行)"
+          else
+            echo "✗ Packages.xz 失败，尝试 Packages.gz..."
+            curl -fSL --retry 3 -o "${PKG_IDX}.gz" \
+              "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz"
+            gunzip -c "${PKG_IDX}.gz" > "$PKG_IDX"
+            echo "✓ Packages.gz 索引下载成功 ($(wc -l < "$PKG_IDX") 行)"
+          fi
+          
+          # 函数：从 Packages 索引获取包的 Filename 字段
+          get_pkg_filename() {
+            local pkg="$1"
+            awk -v p="$pkg" '
+              /^Package: /{found=($2==p)}
+              found && /^Filename: /{print $2; exit}
+              found && /^$/{exit}
+            ' "$PKG_IDX"
+          }
+          
+          # 函数：下载并解压单个 .deb 到 deps-pool
+          download_pkg() {
+            local pkg="$1"
+            local relpath=$(get_pkg_filename "$pkg")
+            if [ -z "$relpath" ]; then
+              echo "⚠ Packages 索引中未找到 $pkg，跳过"
+              return 1
+            fi
+            local url="https://packages.termux.dev/apt/termux-main/${relpath}"
+            echo "  下载 $pkg: $url"
+            local debfile="/tmp/${pkg}.deb"
+            if curl -fSL --retry 3 -o "$debfile" "$url"; then
+              dpkg-deb -x "$debfile" "$DEPS_POOL"
+              echo "  ✓ $pkg 解压完成"
+              return 0
+            else
+              echo "  ✗ $pkg 下载失败"
+              return 1
+            fi
+          }
+          
+          echo ""
+          echo "=== 开始下载 Node.js 依赖包 ==="
+          for pkg in c-ares libffi sqlite icu libandroid-support; do
+            download_pkg "$pkg" || true
+          done
+          
+          echo ""
+          echo "=== 依赖池所有 .so 文件 ==="
+          find "$DEPS_POOL" -name "*.so*" -type f | sort
+          
+          # 合并进 bootstrap，这样后续 find /tmp/bootstrap 会一并搜到
+          cp -an "$DEPS_POOL"/. /tmp/bootstrap/ 2>/dev/null || true
+          echo "已合并至 /tmp/bootstrap"
 
       - name: 组装 jniLibs 原生库
         run: |
           JNI_DIR="/tmp/jniLibs/arm64-v8a"
           mkdir -p "$JNI_DIR"
-          
+
+          # 同时在 bootstrap 与 nodejs-pkg 两个树里搜索
+          SEARCH_ROOTS=("/tmp/bootstrap" "/tmp/nodejs-pkg")
+          find_any() {
+            local pattern="$1"
+            for root in "${SEARCH_ROOTS[@]}"; do
+              local found=$(find "$root" -name "$pattern" -type f 2>/dev/null | head -1)
+              if [ -n "$found" ]; then echo "$found"; return 0; fi
+            done
+            return 1
+          }
+
           # 找 node 可执行文件（可能是 bin/node，也可能是 libnode.so）
           NODE_BIN=""
-          # 先找 bin/node
           NODE_BIN=$(find /tmp/nodejs-pkg -name "node" -type f -path "*/bin/*" 2>/dev/null | head -1)
           if [ -z "$NODE_BIN" ]; then
-            # 再找 libnode.so
             NODE_BIN=$(find /tmp/nodejs-pkg -name "libnode.so*" -type f 2>/dev/null | head -1)
           fi
-          
+
           if [ -n "$NODE_BIN" ]; then
             cp "$NODE_BIN" "$JNI_DIR/libnode.so"
             chmod 755 "$JNI_DIR/libnode.so"
             echo "✓ libnode.so (from: $NODE_BIN)"
             file "$JNI_DIR/libnode.so"
+            echo ""
+            echo "=== Node.js 实际需要的动态库（readelf NEEDED） ==="
+            readelf -d "$JNI_DIR/libnode.so" 2>/dev/null | grep "NEEDED" || echo "readelf 不可用，跳过"
           else
             echo "✗ 未找到 Node.js 可执行文件！"
-            echo "nodejs-pkg 内容:"
-            find /tmp/nodejs-pkg -type f | head -50
             exit 1
           fi
-          
+
+          echo ""
+          echo "=== 搜索范围 .so 概览 ==="
+          (for r in "${SEARCH_ROOTS[@]}"; do find "$r" -name "*.so*" -type f 2>/dev/null; done) | sort | xargs -I{} basename "{}" | sort -u
+
           # 复制 Node.js 自带的 .so 依赖
+          echo ""
+          echo "=== nodejs 包中的 .so ==="
           find /tmp/nodejs-pkg -name "*.so*" -type f 2>/dev/null | while read sofile; do
-            basename=$(basename "$sofile")
-            # 跳过已经复制过的 libnode
-            if [[ "$basename" == libnode* ]]; then continue; fi
-            cp "$sofile" "$JNI_DIR/$basename"
-            echo "✓ $basename (from nodejs pkg)"
+            bn=$(basename "$sofile")
+            [[ "$bn" == libnode* ]] && continue
+            cp "$sofile" "$JNI_DIR/$bn"
+            echo "✓ $bn (nodejs pkg)"
           done
-          
-          # 复制 bootstrap 里的依赖库（按 NodeService.kt 的命名映射）
+
+          # 复制依赖库（按 NodeService.kt 的命名映射）
+          # 使用前缀匹配：libcares* 能命中 libcares.so.2 / libcares.so.2.8.1 等
           declare -A MAP=(
-            ["libc++_shared.so"]="libc++_shared.so"
-            ["libcares.so"]="libcares.so"
-            ["libcrypto.so.3"]="libcrypto3.so"
-            ["libssl.so.3"]="libssl3.so"
-            ["libz.so.1"]="libz1.so"
-            ["libffi.so"]="libffi.so"
-            ["libsqlite3.so"]="libsqlite3.so"
+            ["libc++_shared"]="libc++_shared.so"
+            ["libcares"]="libcares.so"
+            ["libcrypto"]="libcrypto3.so"
+            ["libssl"]="libssl3.so"
+            ["libz"]="libz1.so"
+            ["libffi"]="libffi.so"
+            ["libsqlite3"]="libsqlite3.so"
+            ["libandroid-support"]="libandroid-support.so"
           )
-          
-          for src in "${!MAP[@]}"; do
-            dst="${MAP[$src]}"
-            found=$(find /tmp/bootstrap -name "$src" -type f 2>/dev/null | head -1)
-            if [ -z "$found" ]; then
-              base="${src%%.so*}.so"
-              found=$(find /tmp/bootstrap -name "$base*" -type f 2>/dev/null | head -1)
-            fi
+
+          echo ""
+          echo "=== 依赖库查找 ==="
+          for prefix in "${!MAP[@]}"; do
+            dst="${MAP[$prefix]}"
+            # 特殊处理：libcrypto/libssl/libz 要带版本后缀精确匹配
+            case "$prefix" in
+              libcrypto) found=$(find_any "libcrypto.so.3") ;;
+              libssl)    found=$(find_any "libssl.so.3") ;;
+              libz)      found=$(find_any "libz.so.1") ;;
+              *)         found=$(find_any "${prefix}*") ;;
+            esac
             if [ -n "$found" ]; then
               cp "$found" "$JNI_DIR/$dst"
-              echo "✓ $dst"
+              echo "✓ $dst  (src: $(basename "$found"))"
             else
-              echo "⚠ 未找到 $src"
+              case "$prefix" in
+                libsqlite3|libffi|libandroid-support)
+                  echo "⚠ $prefix 未找到（非核心依赖，仅告警）" ;;
+                *)
+                  echo "✗ $prefix 未找到（核心依赖，可能导致 node 无法启动）" ;;
+              esac
             fi
           done
-          
-          # 动态查找 ICU 库（版本号可能变化）
-          ICU_LIBS=$(find /tmp/bootstrap -name "libicu*.so*" -type f 2>/dev/null)
-          if [ -n "$ICU_LIBS" ]; then
-            echo ""
-            echo "=== ICU 库 ==="
-            echo "$ICU_LIBS"
-            # 复制并创建带版本号后缀的命名
-            for icu in $ICU_LIBS; do
-              name=$(basename "$icu")
-              cp "$icu" "$JNI_DIR/$name"
-              echo "✓ $name"
-            done
-          fi
-          
+
+          # 动态查找 ICU 库（版本号可能变化，如 75、78、79）
+          # 必须重命名为 lib<icuprefix><VERSION>.so（版本嵌在 .so 前），确保
+          # ① Android 包管理器正常提取（要求以 .so 结尾）② NodeService 过滤器能匹配
           echo ""
-          echo "=== 最终 jniLibs 列表 ==="
+          echo "=== ICU 库查找与重命名 ==="
+          ICU_FOUND=0
+          for r in "${SEARCH_ROOTS[@]}"; do
+            while IFS= read -r icu; do
+              [ -z "$icu" ] && continue
+              src=$(basename "$icu")
+              # 从文件名中提取 pattern（icui18n/icuuc/icudata）和主版本号
+              pattern=""
+              version=""
+              if [[ "$src" =~ ^lib(icudata|icui18n|icuuc)([0-9]+)\.so$ ]]; then
+                pattern="lib${BASH_REMATCH[1]}"
+                version="${BASH_REMATCH[2]}"
+                newname="$src"  # 已是兼容格式
+              elif [[ "$src" =~ ^lib(icudata|icui18n|icuuc)\.so\.([0-9]+) ]]; then
+                pattern="lib${BASH_REMATCH[1]}"
+                version="${BASH_REMATCH[2]}"
+                newname="${pattern}${version}.so"
+              else
+                echo "  ※ 无法解析版本，按原名复制: $src"
+                newname="$src"
+              fi
+              [ -f "$JNI_DIR/$newname" ] && continue
+              cp "$icu" "$JNI_DIR/$newname"
+              echo "✓ $src  →  $newname"
+              ICU_FOUND=1
+            done < <(find "$r" \( -name "libicui18n*" -o -name "libicuuc*" -o -name "libicudata*" \) \( -type f -o -type l \) 2>/dev/null)
+          done
+          if [ "$ICU_FOUND" -eq 0 ]; then
+            echo "✗ 未找到任何 ICU 库！Node.js 大概率无法启动（缺少 Intl 支持）"
+          fi
+
+          # 构建 SONAME → jniLibs 文件名 映射文件，供 NodeService 运行时创建精确软链接
+          SONAME_MAP="/tmp/soname_map.txt"
+          : > "$SONAME_MAP"
+          echo ""
+          echo "=== 生成 SONAME 映射 ==="
+          for f in "$JNI_DIR"/*.so*; do
+            [ -f "$f" ] || continue
+            fname=$(basename "$f")
+            [ "$fname" = "libnode.so" ] && continue
+            # 用 readelf 提取库自身的 SONAME（匹配 [soname] 括号内容，非贪婪）
+            sn=$(readelf -d "$f" 2>/dev/null | sed -n 's/.*SONAME.*\[\([^]]*\)\].*/\1/p')
+            if [ -z "$sn" ]; then
+              # 若无内嵌 SONAME，退化为文件名本身
+              sn="$fname"
+            fi
+            echo "$sn:$fname" >> "$SONAME_MAP"
+            echo "  $sn  →  $fname"
+          done
+          # 也把已知但 SONAME 与拷贝名等价的情况兜底
+          for equiv in "libc++_shared.so:libc++_shared.so" "libandroid-support.so:libandroid-support.so"; do
+            grep -q "^${equiv%%:*}:" "$SONAME_MAP" 2>/dev/null || echo "$equiv" >> "$SONAME_MAP"
+          done
+          # 复制到 /tmp 便于后续「组装 Android 项目资源」步骤放进 assets/backend
+          cp "$SONAME_MAP" /tmp/soname_map.txt
+          echo "→ 映射文件: /tmp/soname_map.txt ($(wc -l < /tmp/soname_map.txt) 条)"
+
+          echo ""
+          echo "=== 最终 jniLibs 列表 ($(ls "$JNI_DIR" | wc -l) 个文件) ==="
           ls -lh "$JNI_DIR/"
 
       # ===== 8. 组装 Android 项目资源 =====
@@ -442,6 +581,13 @@ jobs:
           rm -rf "$ASSETS"
           mkdir -p "$ASSETS"
           cp -a /tmp/android-backend/. "$ASSETS/"
+          
+          # 把构建期生成的 SONAME 映射文件放进 assets/backend，运行时由 NodeService 读取
+          if [ -f /tmp/soname_map.txt ]; then
+            cp /tmp/soname_map.txt "$ASSETS/soname_map.txt"
+            echo "已附加 soname_map.txt："
+            cat "$ASSETS/soname_map.txt"
+          fi
           
           # 复制原生库
           JNI="$DIR/app/src/main/jniLibs"
