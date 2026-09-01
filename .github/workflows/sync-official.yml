@@ -10,7 +10,7 @@ on:
       branch:
         description: '官方仓库分支'
         required: true
-        default: 'main'
+        default: 'master'
       create_pr:
         description: '是否创建 Pull Request（false 则直接提交到当前分支）'
         required: true

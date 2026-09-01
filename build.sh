@@ -36,8 +36,8 @@ usage() {
     echo ""
     echo "选项:"
     echo "  --source <路径>    指定本地 cf-manager 源码路径（不指定则从 GitHub 克隆）"
-    echo "  --repo <url>       指定 Git 仓库地址（默认: https://github.com/123456789l/cf-manager.git）"
-    echo "  --branch <name>    指定分支（默认: main）"
+    echo "  --repo <url>       指定 Git 仓库地址（默认: https://github.com/hefy2027/cf-manager.git）"
+    echo "  --branch <name>    指定分支（默认: master）"
     echo "  --assets-only      只更新 assets/backend 代码，不构建 APK"
     echo "  --no-build         同 --assets-only（兼容旧版）"
     echo "  --build-apk        仅构建 APK（假设 assets 已准备好）"
@@ -54,8 +54,8 @@ usage() {
 
 # 默认参数
 SOURCE_DIR=""
-REPO_URL="https://github.com/123456789l/cf-manager.git"
-BRANCH="main"
+REPO_URL="https://github.com/hefy2027/cf-manager.git"
+BRANCH="master"
 UPDATE_ASSETS=true
 BUILD_APK=true
 CLEAN=false

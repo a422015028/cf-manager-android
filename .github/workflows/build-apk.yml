@@ -80,7 +80,7 @@ jobs:
           echo "从官方源码构建 assets/backend..."
           
           # 克隆官方源码
-          git clone --depth 1 -b main \
+          git clone --depth 1 -b master \
             https://github.com/hefy2027/cf-manager.git \
             tmp_build
           
