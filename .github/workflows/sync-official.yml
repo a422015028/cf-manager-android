@@ -93,6 +93,18 @@ jobs:
         run: |
           cd tmp_build/backend
           
+          echo "安装后端依赖（含 TypeScript 编译工具）..."
+          npm install
+          
+          echo "编译 TypeScript..."
+          npm run build
+          
+          if [ ! -d "dist" ]; then
+            echo "❌ 编译失败，dist 目录不存在"
+            exit 1
+          fi
+          echo "✅ TypeScript 编译完成"
+          
           echo "移除 better-sqlite3，添加 sql.js..."
           node -e "
             const fs = require('fs');
@@ -109,7 +121,8 @@ jobs:
             console.log('✅ package.json 已更新');
           "
           
-          echo "安装后端依赖..."
+          echo "重新安装运行时依赖（sql.js 替换 better-sqlite3）..."
+          rm -rf node_modules
           npm install --omit=dev
           
           if [ ! -d "node_modules/sql.js" ]; then
@@ -119,11 +132,24 @@ jobs:
           echo "✅ sql.js 已安装"
           
           echo "替换数据库层为 sql.js 兼容版..."
-          cp "$GITHUB_WORKSPACE/patches/db.js" db.js
+          cp "$GITHUB_WORKSPACE/patches/db.js" dist/db.js
           
-          echo "修正前端静态文件路径..."
-          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" index.js
-          sed -i "s|path.join(path.join(__dirname, 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" index.js
+          echo "修正前端静态文件路径（dist 扁平化后 public 同级）..."
+          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" dist/index.js
+          sed -i "s|path.join(path.join(__dirname, '..', 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" dist/index.js
+          
+          echo "注入 sql.js 异步初始化（initDbAsync）..."
+          node -e "
+            const fs = require('fs');
+            let content = fs.readFileSync('dist/index.js', 'utf8');
+            // 在 start() 函数中，第一个 initDb 调用前插入 initDbAsync 检查
+            content = content.replace(
+              /(async function start\(\)\s*\{[\s\S]*?)(\(0, [a-zA-Z_$][\w$]*\.initDb\)\(\);)/,
+              '\$1    if (typeof db_1.initDbAsync === \"function\") {\n        await db_1.initDbAsync();\n    }\n    \$2'
+            );
+            fs.writeFileSync('dist/index.js', content);
+            console.log('✅ 异步初始化已注入');
+          "
           
           echo "复制前端构建产物到后端 public 目录..."
           rm -rf public
@@ -137,37 +163,24 @@ jobs:
           rm -rf app/src/main/assets/backend
           mkdir -p app/src/main/assets/backend
           
-          cd tmp_build/backend
+          cd tmp_build/backend/dist
           
-          ITEMS=(
-            "index.js"
-            "db.js"
-            "config.js"
-            "utils.js"
-            "constants.js"
-            "version.js"
-            "package.json"
-            "package-lock.json"
-            "routes/"
-            "services/"
-            "middleware/"
-            "models/"
-            "data/"
-            "public/"
-            "node_modules/"
-          )
+          # 复制编译后的 JS 文件（dist 内容扁平化到 assets/backend 根目录）
+          echo "复制编译后的后端代码..."
+          cp -r * "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
           
-          count=0
-          for item in "${ITEMS[@]}"; do
-            if [ -e "$item" ]; then
-              cp -r "$item" "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
-              count=$((count + 1))
-              echo "  已复制: $item"
-            fi
-          done
+          # 复制 node_modules、package.json 等运行时文件
+          echo "复制运行时依赖..."
+          cp -r ../node_modules "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+          cp ../package.json "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+          cp ../package-lock.json "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+          
+          # 复制前端静态文件
+          echo "复制前端静态文件..."
+          cp -r ../public "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
           
           size=$(du -sh "$GITHUB_WORKSPACE/app/src/main/assets/backend" | cut -f1)
-          echo "✅ Assets 更新完成（共 $count 项，总大小: $size）"
+          echo "✅ Assets 更新完成（总大小: $size）"
 
       - name: 获取新版本号
         id: new_version

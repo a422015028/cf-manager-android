@@ -209,12 +209,26 @@ build_frontend() {
 }
 
 # ============================================================
-# 步骤 3: 准备后端 + Android 适配
+# 步骤 3: 编译后端 + Android 适配
 # ============================================================
 prepare_backend() {
-    log_step "3/4 准备后端并适配 Android"
+    log_step "3/4 编译后端并适配 Android"
     
     cd "$TMP_DIR/backend"
+    
+    # 安装完整依赖（含 TypeScript 编译工具）
+    log_info "安装后端依赖（含 TypeScript）..."
+    npm install
+    
+    # 编译 TypeScript
+    log_info "编译 TypeScript..."
+    npm run build
+    
+    if [ ! -d "dist" ]; then
+        log_error "编译失败，dist 目录不存在"
+        exit 1
+    fi
+    log_info "TypeScript 编译完成"
     
     # 移除 better-sqlite3（Android 不兼容原生模块，改用 sql.js）
     log_info "移除 better-sqlite3 依赖（替换为 sql.js）..."
@@ -237,8 +251,9 @@ prepare_backend() {
         "
     fi
     
-    # 安装后端依赖
-    log_info "安装后端依赖..."
+    # 重新安装运行时依赖
+    log_info "重新安装运行时依赖..."
+    rm -rf node_modules
     npm install --omit=dev
     
     # 确认 sql.js 已安装
@@ -250,14 +265,24 @@ prepare_backend() {
     
     # 替换 db.js 为 Android 适配版本（sql.js 兼容层）
     log_info "替换数据库层为 sql.js 兼容版..."
-    cp "$PATCHES_DIR/db.js" "$TMP_DIR/backend/db.js"
+    cp "$PATCHES_DIR/db.js" "$TMP_DIR/backend/dist/db.js"
     
-    # 修改 index.js 中的前端静态文件路径（从 ../public 改为 ./public）
+    # 修改 index.js 中的前端静态文件路径（dist 扁平化后从 ../public 改为 ./public）
     log_info "修正前端静态文件路径..."
-    sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" "$TMP_DIR/backend/index.js"
+    sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" "$TMP_DIR/backend/dist/index.js"
+    sed -i "s|path.join(path.join(__dirname, '..', 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" "$TMP_DIR/backend/dist/index.js"
     
-    # 也修正 SPA fallback 中的路径
-    sed -i "s|path.join(path.join(__dirname, 'public'), 'index.html')|path.join(__dirname, 'public', 'index.html')|g" "$TMP_DIR/backend/index.js"
+    # 注入 sql.js 异步初始化
+    log_info "注入 sql.js 异步初始化..."
+    node -e "
+        const fs = require('fs');
+        let content = fs.readFileSync('$TMP_DIR/backend/dist/index.js', 'utf8');
+        content = content.replace(
+            /(async function start\(\)\s*\{[\s\S]*?)(\(0, [a-zA-Z_\$][\w\$]*\.initDb\)\(\);)/,
+            '\$1    if (typeof db_1.initDbAsync === \"function\") {\n        await db_1.initDbAsync();\n    }\n    \$2'
+        );
+        fs.writeFileSync('$TMP_DIR/backend/dist/index.js', content);
+    "
     
     # 将前端构建产物复制到后端 public 目录
     log_info "复制前端构建产物到后端 public 目录..."
@@ -277,39 +302,23 @@ update_assets() {
     rm -rf "$ASSETS_BACKEND"
     mkdir -p "$ASSETS_BACKEND"
     
-    # 复制后端代码
-    cd "$TMP_DIR/backend"
+    # 复制编译后的 JS 文件（dist 内容扁平化到 assets/backend 根目录）
+    log_info "复制编译后的后端代码..."
+    cp -r "$TMP_DIR/backend/dist/"* "$ASSETS_BACKEND/"
     
-    # 需要复制的文件/目录
-    ITEMS_TO_COPY=(
-        "index.js"
-        "db.js"
-        "config.js"
-        "utils.js"
-        "constants.js"
-        "version.js"
-        "package.json"
-        "routes/"
-        "services/"
-        "middleware/"
-        "models/"
-        "data/"
-        "public/"
-        "node_modules/"
-    )
+    # 复制运行时依赖和配置
+    log_info "复制运行时依赖..."
+    cp -r "$TMP_DIR/backend/node_modules" "$ASSETS_BACKEND/"
+    cp "$TMP_DIR/backend/package.json" "$ASSETS_BACKEND/"
+    cp "$TMP_DIR/backend/package-lock.json" "$ASSETS_BACKEND/"
     
-    local count=0
-    for item in "${ITEMS_TO_COPY[@]}"; do
-        if [ -e "$item" ]; then
-            cp -r "$item" "$ASSETS_BACKEND/"
-            count=$((count + 1))
-            log_info "  已复制: $item"
-        fi
-    done
+    # 复制前端静态文件
+    log_info "复制前端静态文件..."
+    cp -r "$TMP_DIR/backend/public" "$ASSETS_BACKEND/"
     
     # 统计 assets 大小
     local size=$(du -sh "$ASSETS_BACKEND" | cut -f1)
-    log_info "Assets 更新完成（共 $count 项，总大小: $size）"
+    log_info "Assets 更新完成（总大小: $size）"
 }
 
 # ============================================================

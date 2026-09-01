@@ -89,8 +89,12 @@ jobs:
           npm install
           npm run build
           
-          # 后端适配
+          # 后端编译 + Android 适配
           cd ../backend
+          
+          # 安装完整依赖（含 TypeScript）并编译
+          npm install
+          npm run build
           
           # 移除 better-sqlite3，添加 sql.js
           node -e "
@@ -103,35 +107,44 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
           
+          # 重新安装运行时依赖
+          rm -rf node_modules
           npm install --omit=dev
           
-          # 替换 db.js
-          cp "$GITHUB_WORKSPACE/patches/db.js" db.js
+          # 替换 db.js 为 sql.js 兼容版
+          cp "$GITHUB_WORKSPACE/patches/db.js" dist/db.js
           
-          # 修正路径
-          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" index.js
+          # 修正路径（dist 扁平化后 public 同级）
+          sed -i "s|path.join(__dirname, '..', 'public')|path.join(__dirname, 'public')|g" dist/index.js
           
-          # 复制前端产物
+          # 注入 sql.js 异步初始化
+          node -e "
+            const fs = require('fs');
+            let content = fs.readFileSync('dist/index.js', 'utf8');
+            content = content.replace(
+              /(async function start\(\)\s*\{[\s\S]*?)(\(0, [a-zA-Z_$][\w$]*\.initDb\)\(\);)/,
+              '\$1    if (typeof db_1.initDbAsync === \"function\") {\n        await db_1.initDbAsync();\n    }\n    \$2'
+            );
+            fs.writeFileSync('dist/index.js', content);
+          "
+          
+          # 复制前端产物到 public
           rm -rf public
           cp -r "$GITHUB_WORKSPACE/tmp_build/frontend/dist" public
           
-          # 更新到 assets
+          # 更新到 assets（dist 内容扁平化到根目录）
           cd "$GITHUB_WORKSPACE"
           rm -rf app/src/main/assets/backend
           mkdir -p app/src/main/assets/backend
           
-          cd tmp_build/backend
-          ITEMS=(
-            "index.js" "db.js" "config.js" "utils.js" "constants.js" "version.js"
-            "package.json" "package-lock.json"
-            "routes/" "services/" "middleware/" "models/" "data/" "public/" "node_modules/"
-          )
-          
-          for item in "${ITEMS[@]}"; do
-            if [ -e "$item" ]; then
-              cp -r "$item" "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
-            fi
-          done
+          # 复制编译后的 JS
+          cp -r tmp_build/backend/dist/* app/src/main/assets/backend/
+          # 复制运行时文件
+          cp -r tmp_build/backend/node_modules app/src/main/assets/backend/
+          cp tmp_build/backend/package.json app/src/main/assets/backend/
+          cp tmp_build/backend/package-lock.json app/src/main/assets/backend/
+          # 复制前端静态文件
+          cp -r tmp_build/backend/public app/src/main/assets/backend/
           
           rm -rf "$GITHUB_WORKSPACE/tmp_build"
           echo "✅ assets/backend 准备完成"
