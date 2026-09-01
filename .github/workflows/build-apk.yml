@@ -270,6 +270,25 @@ jobs:
             app/build/outputs/apk/**/*.apk
           retention-days: 30
 
+      - name: 发布到 GitHub Release
+        if: github.event.inputs.build_type == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version_name }}
+          name: v${{ steps.version.outputs.version_name }}
+          body: |
+            ## cf-manager-android v${{ steps.version.outputs.version_name }}
+
+            **官方仓库**: ${{ env.REPO_URL }} (${{ env.BRANCH }})
+            **版本号**: v${{ steps.version.outputs.version_name }} (${{ steps.version.outputs.version_code }})
+            **构建类型**: Release
+
+            > 源码包与 APK 同步发布
+          files: |
+            app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+
       - name: 输出构建结果
         run: |
           echo ""
@@ -284,3 +303,7 @@ jobs:
           find app/build/outputs/apk -name "*.apk" -exec echo "  - {}" \;
           echo ""
           echo "产物已上传到 Artifacts，可在 Action 页面下载"
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            echo ""
+            echo "✅ Release 版本已发布到 GitHub Release（源码与 APK 同步发布）"
+          fi
