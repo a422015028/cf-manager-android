@@ -414,17 +414,40 @@ jobs:
           declare -A PKG_TRY=(
             ["c-ares"]="c-ares"
             ["libffi"]="libffi"
-            ["sqlite"]="sqlite3 sqlite sqlite-utils"
+            # Termux/sqlite 组合中，"sqlite" 只是 CLI 程序包，不含运行时 .so；
+            # Debian 惯例运行库包名通常是 libsqlite3-0 / libsqlite3。按：
+            #  ① libsqlite3-0（Debian 风格 soname 包）
+            #  ② libsqlite3（缩写形式）
+            #  ③ sqlite3（Termux 官方文档里出现过）
+            #  ④ sqlite（兜底，虽然不含 .so，但为了不遗漏老版本保留）
+            # 的顺序尝试，并且成功解包后要验证 .so 真的出现，否则继续试。
+            ["sqlite"]="libsqlite3-0 libsqlite3 sqlite3 sqlite"
             ["icu"]="icu libicu libicui18n libicuuc libicudata"
+            ["libandroid-support"]="libandroid-support"
+          )
+          # 每个逻辑 key 期望在解包后能找到的 .so 前缀（用于 post-unpack 验证）
+          declare -A PKG_EXPECT_SO=(
+            ["sqlite"]="libsqlite3"
+            ["icu"]="libicu"
+            ["c-ares"]="libcares"
+            ["libffi"]="libffi"
             ["libandroid-support"]="libandroid-support"
           )
           for key in "${!PKG_TRY[@]}"; do
             echo ""
             echo "─── 搜索 $key ───"
+            expected="${PKG_EXPECT_SO[$key]}"
             for pkg in ${PKG_TRY[$key]}; do
+              # 先统计这个逻辑 key 目前在 deps-pool 里已经有多少 .so
+              before=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
               if download_pkg "$pkg"; then
-                echo "  ✓ [$key] 命中包名: $pkg"
-                break
+                after=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
+                if [ -z "$expected" ] || [ "$after" -gt "$before" ]; then
+                  echo "  ✓ [$key] 命中包名: $pkg（池中 ${expected}* .so 文件数: $before → $after）"
+                  break
+                else
+                  echo "  ※ $pkg 下载成功但池中未增加 ${expected}* .so（before=$before → after=$after），该包不包含运行时库，继续尝试下一个候选…"
+                fi
               else
                 echo "  ※ $pkg 未命中/下载失败，尝试下一个候选…"
               fi
@@ -525,14 +548,23 @@ jobs:
           echo "=== 依赖库查找 ==="
           for prefix in "${!MAP[@]}"; do
             dst="${MAP[$prefix]}"
-            # 特殊处理：libcrypto/libssl/libz 要带版本后缀精确匹配
+            # 匹配时必须带 .so* 后缀，避免命中 pkg-config（libcares.pc）、
+            # info 文档（libffi.info）、dpkg list（libandroid-support.list）等
+            # 非库文件（find 的前缀模式会把这些东西一起搜出来）。
             case "$prefix" in
-              libcrypto) found=$(find_any "libcrypto.so.3") ;;
-              libssl)    found=$(find_any "libssl.so.3") ;;
-              libz)      found=$(find_any "libz.so.1") ;;
-              *)         found=$(find_any "${prefix}*") ;;
+              libcrypto) found=$(find_any "libcrypto.so.3*") ;;
+              libssl)    found=$(find_any "libssl.so.3*") ;;
+              # bootstrap 里往往只有真正的 regular file libz.so.1.3.1，
+              # 不一定有 libz.so.1 这个 soname symlink，所以放宽到 libz.so.1*
+              libz)      found=$(find_any "libz.so.1*") ;;
+              *)         found=$(find_any "${prefix}.so*") ;;
             esac
             if [ -n "$found" ]; then
+              # 防御性检查：后缀真的是 .so 或 .so.xxx（避免万一 find_any 模式漏了）
+              case "$(basename "$found")" in
+                *.so|*.so.*) ;;
+                *) echo "⚠ 忽略非库文件: $found（可能是 .pc/.info/.list 等残留匹配）"; continue ;;
+              esac
               cp "$found" "$JNI_DIR/$dst"
               echo "✓ $dst  (src: $(basename "$found"))"
             else
@@ -552,20 +584,32 @@ jobs:
             while IFS= read -r icu; do
               [ -z "$icu" ] && continue
               src=$(basename "$icu")
+              # ── 过滤：跳过未版本化的 dev 软链（形如 libicudata.so） ──
+              #    .deb 中通常有三种共存：
+              #      libicudata.so       → 开发链接用 soname 软链（点号后无数字）
+              #      libicudata.so.78    → soname 链接（.so 后接主版本号）
+              #      libicudata.so.78.3  → 实际运行库（完整版本）
+              #    第一种若按原名复制会产生 jniLibs/libicudata.so，既不遵循 Android
+              #    提取规则又与重命名产物 libicudata78.so 重复，还会让 SONAME 映射
+              #    出现两条「同一 soname → 不同 jni 文件名」错误。所以直接跳过。
+              if [[ "$src" =~ ^lib(icudata|icui18n|icuuc)\.so$ ]]; then
+                echo "  ※ 跳过未版本化的 dev 软链: $src"
+                continue
+              fi
               # 从文件名中提取 pattern（icui18n/icuuc/icudata）和主版本号
               pattern=""
               version=""
               if [[ "$src" =~ ^lib(icudata|icui18n|icuuc)([0-9]+)\.so$ ]]; then
                 pattern="lib${BASH_REMATCH[1]}"
                 version="${BASH_REMATCH[2]}"
-                newname="$src"  # 已是兼容格式
+                newname="$src"  # 已是兼容格式（理论上搜索源中不会出现）
               elif [[ "$src" =~ ^lib(icudata|icui18n|icuuc)\.so\.([0-9]+) ]]; then
                 pattern="lib${BASH_REMATCH[1]}"
                 version="${BASH_REMATCH[2]}"
                 newname="${pattern}${version}.so"
               else
-                echo "  ※ 无法解析版本，按原名复制: $src"
-                newname="$src"
+                echo "  ※ 无法解析版本，跳过: $src"
+                continue  # 原先是「按原名复制」，改为直接跳过，避免命名混乱
               fi
               [ -f "$JNI_DIR/$newname" ] && continue
               cp "$icu" "$JNI_DIR/$newname"
@@ -607,14 +651,20 @@ jobs:
           echo ""
           echo "=== NEEDED ↔ SONAME 交叉校验 ==="
           MISSING=()
-          # Android 系统自带、无需打包的库（Bionic 提供）
+          # Android 系统自带、无需打包的库（Bionic 提供）——精确匹配，不能前缀！
+          # 注意：严禁写「libc*」这类通配，会误匹配 libcares/libcrypto/libc++_shared。
           SYSTEM_LIBS="libc.so:libm.so:libdl.so:liblog.so:libandroid.so:libjnigraphics.so"
           is_system_lib() {
             local s="$1"
+            # 1) 精确匹配 SYSTEM_LIBS 列表
             [[ ":$SYSTEM_LIBS:" == *":$s:"* ]] && return 0
-            # 兼容变体：libc.so / libc-2.x.so 都是系统库
+            # 2) 严格变体匹配（必须含 .so. 或 -<version>.so，避免前缀模糊）
+            #    兼容 libc.so.6 / libc-2.31.so / libm-2.31.so 等 Linux/glibc 风格
             case "$s" in
-              libc*|libm*|libdl*|liblog*|libandroid*) return 0 ;;
+              libc.so.*|libc-*.so)     return 0 ;;
+              libm.so.*|libm-*.so)     return 0 ;;
+              libdl.so.*|libdl-*.so)   return 0 ;;
+              liblog.so.*|liblog-*.so) return 0 ;;
             esac
             return 1
           }
