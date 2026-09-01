@@ -136,10 +136,10 @@ app.get('/api/audit-log/actions', (_req, res, next) => {
 });
 app.use(errorHandler_1.errorHandler);
 async function start() {
-        if (typeof db_1.initDbAsync === "function") {
+    if (typeof db_1.initDbAsync === "function") {
         await db_1.initDbAsync();
     }
-    (0, db_1.initDb)();
+        (0, db_1.initDb)();
     (0, taskScheduler_1.initScheduler)();
     (0, browserRateLimiter_1.initBrowserRateLimiter)();
     // Catalog refresh cron (every 6 hours)

@@ -1,4 +1,4 @@
-﻿name: Sync with Official
+name: Sync with Official
 
 on:
   workflow_dispatch:
@@ -185,6 +185,19 @@ jobs:
           # 复制前端静态文件
           echo "复制前端静态文件..."
           cp -r ../public "$GITHUB_WORKSPACE/app/src/main/assets/backend/"
+          
+          # 清理开发文件（source maps 和 TypeScript 声明文件，运行时不需要）
+          echo "清理开发文件（source maps / type declarations）..."
+          BEFORE_SIZE=$(du -sb "$GITHUB_WORKSPACE/app/src/main/assets/backend" | cut -f1)
+          DEV_FILE_COUNT=$(find "$GITHUB_WORKSPACE/app/src/main/assets/backend" -type f \( -name "*.map" -o -name "*.d.ts" \) | wc -l)
+          if [ "$DEV_FILE_COUNT" -gt 0 ]; then
+            find "$GITHUB_WORKSPACE/app/src/main/assets/backend" -type f \( -name "*.map" -o -name "*.d.ts" \) -delete
+            AFTER_SIZE=$(du -sb "$GITHUB_WORKSPACE/app/src/main/assets/backend" | cut -f1)
+            SAVED_KB=$(( (BEFORE_SIZE - AFTER_SIZE) / 1024 ))
+            echo "🧹 已清理 $DEV_FILE_COUNT 个开发文件，节省 ${SAVED_KB} KB"
+          else
+            echo "ℹ️ 未找到开发文件"
+          fi
           
           size=$(du -sh "$GITHUB_WORKSPACE/app/src/main/assets/backend" | cut -f1)
           echo "✅ Assets 更新完成（总大小: $size）"

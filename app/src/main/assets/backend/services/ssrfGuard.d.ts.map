@@ -1,1 +1,0 @@
-{"version":3,"file":"ssrfGuard.d.ts","sourceRoot":"","sources":["../../src/services/ssrfGuard.ts"],"names":[],"mappings":"AAwCA,wBAAgB,YAAY,IAAI,MAAM,EAAE,GAAG,IAAI,CAK9C;AAsCD,wBAAsB,aAAa,CAAC,GAAG,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAiB9D;AAGD,wBAAsB,iBAAiB,CAAC,GAAG,EAAE,MAAM,GAAG,OAAO,CAAC,MAAM,CAAC,CA0EpE"}

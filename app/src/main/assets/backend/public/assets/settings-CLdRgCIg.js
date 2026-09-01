@@ -1,0 +1,1 @@
+import{n as e}from"./_plugin-vue_export-helper-DcSB3ObZ.js";var t={get:()=>e.get(`/settings`),clearCache:()=>e.post(`/settings/cache/clear`),testProxy:t=>e.post(`/settings/proxy/test`,{proxy_url:t}),saveResin:t=>e.put(`/settings/resin`,t),testResin:()=>e.post(`/settings/resin/test`)};export{t};

@@ -5,97 +5,238 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.View
 import android.webkit.*
-import android.widget.ProgressBar
-import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AppCompatActivity
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import top.yukonga.miuix.kmp.basic.NavigationBar
+import top.yukonga.miuix.kmp.basic.NavigationBarItem
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-class MainActivity : AppCompatActivity() {
-    private lateinit var webView: WebView
-    private lateinit var progressBar: ProgressBar
-    private lateinit var swipeRefresh: SwipeRefreshLayout
-    private lateinit var loadingText: TextView
-    private lateinit var handler: Handler
+data class NavItem(
+    val route: String,
+    val path: String,
+    val labelRes: Int,
+    val icon: ImageVector
+)
+
+val navItems = listOf(
+    NavItem("dashboard", "/", R.string.nav_dashboard, Icons.Outlined.Dashboard),
+    NavItem("accounts", "/accounts", R.string.nav_accounts, Icons.Outlined.Person),
+    NavItem("dns", "/dns", R.string.nav_dns, Icons.Outlined.Dns),
+    NavItem("workers", "/workers", R.string.nav_workers, Icons.Outlined.Code),
+    NavItem("settings", "/settings", R.string.nav_settings, Icons.Outlined.Settings)
+)
+
+class MainActivity : ComponentActivity() {
+    private var webView: WebView? = null
+    private var swipeRefresh: SwipeRefreshLayout? = null
+    private val handler = Handler(Looper.getMainLooper())
     private var serverCheckRunnable: Runnable? = null
     private var checkCount = 0
     private val SERVER_PORT = 38765
 
+    private var isServerReady = mutableStateOf(false)
+    private var loadingMessage = mutableStateOf("")
+    private var currentRoute = mutableStateOf("dashboard")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        webView = findViewById(R.id.webView)
-        progressBar = findViewById(R.id.progressBar)
-        swipeRefresh = findViewById(R.id.swipeRefresh)
-        loadingText = findViewById(R.id.loadingText)
-        handler = Handler(Looper.getMainLooper())
-
-        setupWebView()
-        setupBackPressedHandler()
         startNodeService()
+
+        setContent {
+            MiuixTheme {
+                CFManagerApp()
+            }
+        }
+
         startServerCheck()
     }
 
-    private fun setupWebView() {
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.databaseEnabled = true
-        settings.setSupportZoom(true)
-        settings.builtInZoomControls = true
-        settings.displayZoomControls = false
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-        settings.mediaPlaybackRequiresUserGesture = false
+    @Composable
+    fun CFManagerApp() {
+        val context = LocalContext.current
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): Boolean {
-                val url = request?.url?.toString() ?: return false
-                if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
-                    return false
+        Scaffold(
+            bottomBar = {
+                if (isServerReady.value) {
+                    NavigationBar {
+                        navItems.forEach { item ->
+                            NavigationBarItem(
+                                selected = currentRoute.value == item.route,
+                                onClick = {
+                                    navigateTo(item.path)
+                                    currentRoute.value = item.route
+                                },
+                                icon = item.icon,
+                                label = stringResource(item.labelRes)
+                            )
+                        }
+                    }
                 }
-                // Open external links in browser
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                startActivity(intent)
-                return true
             }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                progressBar.visibility = View.GONE
-                swipeRefresh.isRefreshing = false
-            }
-        }
-
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                super.onProgressChanged(view, newProgress)
-                if (newProgress < 100) {
-                    progressBar.visibility = View.VISIBLE
-                    progressBar.progress = newProgress
+        ) { padding ->
+            Box(modifier = Modifier.padding(padding)) {
+                if (isServerReady.value) {
+                    WebViewContainer()
                 } else {
-                    progressBar.visibility = View.GONE
+                    LoadingScreen()
                 }
             }
         }
 
-        swipeRefresh.setOnRefreshListener {
-            webView.reload()
+        BackHandler(enabled = isServerReady.value) {
+            if (webView?.canGoBack() == true) {
+                webView?.goBack()
+            } else {
+                finish()
+            }
         }
+    }
+
+    @Composable
+    fun LoadingScreen() {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator()
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = loadingMessage.value,
+            )
+        }
+    }
+
+    @Composable
+    fun WebViewContainer() {
+        val context = LocalContext.current
+        AndroidView(
+            factory = { ctx ->
+                val layout = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.MATCH_PARENT
+                    )
+                }
+
+                swipeRefresh = SwipeRefreshLayout(ctx).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.MATCH_PARENT
+                    )
+                }
+
+                webView = WebView(ctx).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.cacheMode = WebSettings.LOAD_DEFAULT
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    settings.mediaPlaybackRequiresUserGesture = false
+
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            val url = request?.url?.toString() ?: return false
+                            if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
+                                return false
+                            }
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            context.startActivity(intent)
+                            return true
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            swipeRefresh?.isRefreshing = false
+                            url?.let { updateCurrentRoute(it) }
+                        }
+                    }
+
+                    webChromeClient = object : WebChromeClient() {}
+                }
+
+                swipeRefresh?.addView(webView)
+                layout.addView(swipeRefresh)
+
+                swipeRefresh?.setOnRefreshListener {
+                    webView?.reload()
+                }
+
+                swipeRefresh?.setOnChildScrollUpCallback { _, _ ->
+                    webView?.canScrollVertically(-1) ?: false
+                }
+
+                layout
+            },
+            update = {
+                // 首次加载
+                if (webView?.url == null) {
+                    webView?.loadUrl("http://127.0.0.1:$SERVER_PORT/")
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+
+    private fun navigateTo(path: String) {
+        webView?.let { wv ->
+            wv.evaluateJavascript(
+                "window.location.href = '$path';",
+                null
+            )
+        }
+    }
+
+    private fun updateCurrentRoute(url: String) {
+        val path = url.substringAfter("127.0.0.1:$SERVER_PORT", "")
+            .substringAfter("localhost:$SERVER_PORT", "")
+            .trimEnd('/')
         
-        // Fix swipe refresh conflict with webview scroll
-        // Only allow swipe refresh when webview cannot scroll up further (at the top)
-        swipeRefresh.setOnChildScrollUpCallback { _, _ ->
-            webView.canScrollVertically(-1)
+        val route = when (path) {
+            "", "/" -> "dashboard"
+            "/accounts" -> "accounts"
+            "/dns" -> "dns"
+            "/workers" -> "workers"
+            "/settings" -> "settings"
+            else -> {
+                // 对于子页面，尝试匹配一级路由
+                navItems.find { path.startsWith(it.path) && it.path != "/" }?.route ?: currentRoute.value
+            }
         }
+        currentRoute.value = route
     }
 
     private fun startNodeService() {
@@ -110,41 +251,35 @@ class MainActivity : AppCompatActivity() {
 
     private fun startServerCheck() {
         checkCount = 0
-        loadingText.visibility = View.VISIBLE
-        webView.visibility = View.GONE
-        loadingText.text = "正在启动服务..."
-        
+        loadingMessage.value = getString(R.string.loading_server)
+
         val checkRunnable = object : Runnable {
             override fun run() {
                 val self = this
                 checkCount++
                 if (checkCount > 120) {
                     val error = NodeService.getStartupError()
-                    if (error != null) {
-                        loadingText.text = "启动失败: $error"
+                    loadingMessage.value = if (error != null) {
+                        getString(R.string.startup_failed, error)
                     } else {
-                        loadingText.text = "启动超时，请重启应用"
+                        getString(R.string.startup_timeout)
                     }
-                    progressBar.visibility = View.GONE
                     return
                 }
-                
-                // Check for startup error
+
                 val error = NodeService.getStartupError()
                 if (error != null) {
-                    loadingText.text = "启动失败: $error"
-                    progressBar.visibility = View.GONE
+                    loadingMessage.value = getString(R.string.startup_failed, error)
                     return
                 }
-                
-                loadingText.text = "正在启动服务... (${checkCount}s)"
-                
+
+                loadingMessage.value = getString(R.string.loading_server_with_count, checkCount)
+
                 if (NodeService.isServerReady()) {
-                    loadApp()
+                    onServerReady()
                     return
                 }
-                
-                // Also try to check via HTTP
+
                 Thread {
                     var isReady = false
                     try {
@@ -159,10 +294,10 @@ class MainActivity : AppCompatActivity() {
                     } catch (e: Exception) {
                         // Server not ready yet
                     }
-                    
+
                     if (isReady) {
                         runOnUiThread {
-                            loadApp()
+                            onServerReady()
                         }
                     } else {
                         runOnUiThread {
@@ -172,36 +307,22 @@ class MainActivity : AppCompatActivity() {
                 }.start()
             }
         }
-        
+
         serverCheckRunnable = checkRunnable
         handler.postDelayed(checkRunnable, 2000)
     }
 
-    private fun loadApp() {
-        loadingText.visibility = View.GONE
-        webView.visibility = View.VISIBLE
-        webView.loadUrl("http://127.0.0.1:$SERVER_PORT/")
-    }
-
-    private fun setupBackPressedHandler() {
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (webView.canGoBack()) {
-                    webView.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                }
-            }
-        })
+    private fun onServerReady() {
+        isServerReady.value = true
     }
 
     override fun onDestroy() {
         serverCheckRunnable?.let {
             handler.removeCallbacks(it)
         }
-        webView.stopLoading()
-        webView.destroy()
+        webView?.stopLoading()
+        webView?.destroy()
+        webView = null
         super.onDestroy()
     }
 }

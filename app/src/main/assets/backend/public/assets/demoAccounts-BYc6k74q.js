@@ -1,0 +1,1 @@
+import{Ra as e}from"./_plugin-vue_export-helper-DcSB3ObZ.js";import{t}from"./accounts-C_FExbeg.js";var n=e([]),r=!1;async function i(){if(!r){try{let{data:e}=await t.getAll();n.value=e.accounts||[]}catch{n.value=[]}r=!0}}function a(e){return e==null?!1:n.value.some(t=>t.id===e&&t.is_demo)}export{i as n,a as t};

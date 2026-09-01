@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CF-管理器</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_dashboard">仪表盘</string>
+    <string name="nav_accounts">账号</string>
+    <string name="nav_dns">DNS</string>
+    <string name="nav_workers">Workers</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- 加载状态 -->
+    <string name="loading_server">正在启动服务…</string>
+    <string name="loading_server_with_count">正在启动服务…（%1$d 秒）</string>
+    <string name="startup_timeout">启动超时，请重启应用</string>
+    <string name="startup_failed">启动失败：%1$s</string>
+
+    <!-- 操作提示 -->
+    <string name="pull_to_refresh">下拉刷新</string>
+    <string name="more">更多</string>
+</resources>

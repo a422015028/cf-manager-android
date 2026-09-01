@@ -1,4 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">CF-Manager</string>
+    <string name="app_name">CF-管理器</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_accounts">Accounts</string>
+    <string name="nav_dns">DNS</string>
+    <string name="nav_workers">Workers</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- 加载状态 -->
+    <string name="loading_server">Starting service…</string>
+    <string name="loading_server_with_count">Starting service… (%1$ds)</string>
+    <string name="startup_timeout">Startup timeout, please restart the app</string>
+    <string name="startup_failed">Startup failed: %1$s</string>
+
+    <!-- 操作提示 -->
+    <string name="pull_to_refresh">Pull to refresh</string>
+    <string name="more">More</string>
 </resources>
