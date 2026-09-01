@@ -133,29 +133,45 @@ class NodeService : Service() {
     
     private fun createLibSymlinks(linkDir: File, nativeLibDir: String) {
         // Map of expected soname -> actual file in nativeLibraryDir
-        val symlinks = mapOf(
+        val symlinks = mutableMapOf(
             "libz.so.1" to "libz1.so",
             "libcrypto.so.3" to "libcrypto3.so",
             "libssl.so.3" to "libssl3.so",
-            "libicui18n.so.78" to "libicui18n78.so",
-            "libicuuc.so.78" to "libicuuc78.so",
-            "libicudata.so.78" to "libicudata78.so",
-            // Also create unversioned symlinks for safety
             "libcares.so" to "libcares.so",
             "libsqlite3.so" to "libsqlite3.so",
             "libffi.so" to "libffi.so",
             "libc++_shared.so" to "libc++_shared.so"
         )
-        
+
+        // 动态查找 ICU 库（版本号可能不同，如 78、79 等）
+        val nativeDir = File(nativeLibDir)
+        val icuPatterns = listOf("libicui18n", "libicuuc", "libicudata")
+        if (nativeDir.exists()) {
+            for (pattern in icuPatterns) {
+                val files = nativeDir.listFiles { _, name ->
+                    name.startsWith(pattern) && name.endsWith(".so")
+                }
+                if (!files.isNullOrEmpty()) {
+                    val actualFile = files[0]
+                    // 提取版本号：libicui18n78.so -> 78
+                    val versionPart = actualFile.name.removePrefix(pattern).removeSuffix(".so")
+                    if (versionPart.isNotEmpty()) {
+                        // 例如：libicui18n.so.78 -> libicui18n78.so
+                        symlinks["$pattern.so.$versionPart"] = actualFile.name
+                    }
+                }
+            }
+        }
+
         for ((linkName, targetName) in symlinks) {
             val linkFile = File(linkDir, linkName)
             val targetFile = File(nativeLibDir, targetName)
-            
+
             if (!targetFile.exists()) {
                 Log.w(TAG, "Target library not found: ${targetFile.absolutePath}")
                 continue
             }
-            
+
             if (linkFile.exists()) {
                 val currentTarget = linkFile.canonicalPath
                 if (currentTarget == targetFile.canonicalPath) {
@@ -163,7 +179,7 @@ class NodeService : Service() {
                 }
                 linkFile.delete()
             }
-            
+
             try {
                 // Create symlink using OS command
                 val process = Runtime.getRuntime().exec(
@@ -182,7 +198,7 @@ class NodeService : Service() {
                 targetFile.copyTo(linkFile, overwrite = true)
             }
         }
-        
+
         Log.i(TAG, "Library symlinks created in ${linkDir.absolutePath}")
     }
     
