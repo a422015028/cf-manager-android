@@ -95,10 +95,12 @@ class NodeService : Service() {
         Log.i(TAG, "Files dir: ${filesDir.absolutePath}")
         
         // Create lib symlinks directory for versioned .so files
+        // Always recreate to avoid stale symlinks after app updates (nativeLibraryDir changes)
         val libSymlinkDir = File(filesDir, "lib")
-        if (!libSymlinkDir.exists()) {
-            libSymlinkDir.mkdirs()
+        if (libSymlinkDir.exists()) {
+            libSymlinkDir.deleteRecursively()
         }
+        libSymlinkDir.mkdirs()
         
         // Create symlinks for versioned libraries
         // These point to the actual .so files in nativeLibraryDir (which is executable)
@@ -150,20 +152,12 @@ class NodeService : Service() {
         for ((linkName, targetName) in symlinks) {
             val linkFile = File(linkDir, linkName)
             val targetFile = File(nativeLibDir, targetName)
-            
+
             if (!targetFile.exists()) {
                 Log.w(TAG, "Target library not found: ${targetFile.absolutePath}")
                 continue
             }
-            
-            if (linkFile.exists()) {
-                val currentTarget = linkFile.canonicalPath
-                if (currentTarget == targetFile.canonicalPath) {
-                    continue // Already correct
-                }
-                linkFile.delete()
-            }
-            
+
             try {
                 // Create symlink using OS command
                 val process = Runtime.getRuntime().exec(
