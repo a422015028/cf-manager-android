@@ -437,6 +437,7 @@ jobs:
             echo ""
             echo "─── 搜索 $key ───"
             expected="${PKG_EXPECT_SO[$key]}"
+            HIT=0
             for pkg in ${PKG_TRY[$key]}; do
               # 先统计这个逻辑 key 目前在 deps-pool 里已经有多少 .so
               before=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
@@ -444,6 +445,7 @@ jobs:
                 after=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
                 if [ -z "$expected" ] || [ "$after" -gt "$before" ]; then
                   echo "  ✓ [$key] 命中包名: $pkg（池中 ${expected}* .so 文件数: $before → $after）"
+                  HIT=1
                   break
                 else
                   echo "  ※ $pkg 下载成功但池中未增加 ${expected}* .so（before=$before → after=$after），该包不包含运行时库，继续尝试下一个候选…"
@@ -452,6 +454,34 @@ jobs:
                 echo "  ※ $pkg 未命中/下载失败，尝试下一个候选…"
               fi
             done
+            # ======== FALLBACK：显式候选全失败时，Packages 索引全文模糊搜索 ========
+            # 例如 sqlite 的运行库包名在 Termux 索引里可能不是 sqlite3 也不是 libsqlite3-0，
+            # 而是某个变体。扫描所有 Package: 行，找出含 $key 的候选，按 before/after 验证。
+            if [ "$HIT" -eq 0 ] && [ -n "$expected" ]; then
+              echo "  ⇲  显式候选全部未命中，切换 Packages 全文模糊搜索（关键词: $key，核对 .so: ${expected}*）"
+              # 提取 Packages 中含关键词的包名（不区分大小写），去重，按序尝试
+              fuzzy_candidates=$(awk -v kw="$key" '
+                /^Package: /{name=$2; if (tolower(name) ~ tolower(kw)) print name}
+              ' "$PKG_IDX" | sort -u)
+              for pkg in $fuzzy_candidates; do
+                before=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
+                if download_pkg "$pkg"; then
+                  after=$(find "$DEPS_POOL" -name "${expected}*.so*" \( -type f -o -type l \) 2>/dev/null | wc -l)
+                  if [ "$after" -gt "$before" ]; then
+                    echo "  ✓ [$key] 模糊搜索命中包名: $pkg（池中 ${expected}* .so 文件数: $before → $after）"
+                    HIT=1
+                    break
+                  else
+                    echo "  ※ $pkg 下载成功但池中未增加 ${expected}* .so（before=$before → after=$after），该包不包含运行时库，继续…"
+                  fi
+                else
+                  echo "  ※ $pkg 下载失败，跳过"
+                fi
+              done
+            fi
+            if [ "$HIT" -eq 0 ]; then
+              echo "  ✗ [$key] 所有候选 + Packages 模糊搜索均未找到包含 ${expected}* .so 的包！后续 jniLibs 校验阶段将报告缺失。"
+            fi
           done
           
           echo ""
