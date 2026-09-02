@@ -1,6 +1,6 @@
 # CF Manager Android 版
 
-基于官方 [cf-manager](https://github.com/123456789l/cf-manager) 的 Android 移植版本，前后端均打包在 APK 中，本地运行 Node.js 服务。
+基于官方 [cf-manager](https://github.com/hefy2027/cf-manager) 的 Android 移植版本，前后端均打包在 APK 中，本地运行 Node.js 服务。
 
 ## 目录结构
 
