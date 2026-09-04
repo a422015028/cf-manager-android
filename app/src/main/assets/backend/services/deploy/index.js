@@ -199,7 +199,6 @@ function buildPagesDeploymentConfigs(template, resolvedBindings) {
             previewConfigs.env_vars[k] = { value: v };
         }
     }
-    const hasResourceBindings = resolvedBindings.some(rb => ['kv', 'd1', 'r2'].includes(rb.type));
     // CF Pages PATCH 部署配置的字段格式（来自 wrangler 源码确认）：
     //   kv_namespaces: Record<string, { namespace_id: string }>
     //   d1_databases:   Record<string, { id: string }>

@@ -1,0 +1,1 @@
+import{La as e}from"./client-HiK8ccZm.js";import{t}from"./accounts-CsQW16Z9.js";var n=e([]),r=!1;async function i(){if(!r){try{let{data:e}=await t.getAll();n.value=e.accounts||[]}catch{n.value=[]}r=!0}}function a(e){return e==null?!1:n.value.some(t=>t.id===e&&t.is_demo)}export{i as n,a as t};

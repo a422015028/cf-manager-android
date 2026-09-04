@@ -1,15 +1,26 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractZipFiles = void 0;
-exports.validatePagesProjectName = validatePagesProjectName;
 exports.buildAssetsManifest = buildAssetsManifest;
 exports.listWorkers = listWorkers;
-exports.listPages = listPages;
 exports.resolveMainModule = resolveMainModule;
 exports.deployWorker = deployWorker;
 exports.deployWorkerFromUrl = deployWorkerFromUrl;
 exports.deleteWorker = deleteWorker;
-exports.deletePagesProject = deletePagesProject;
 exports.getWorkerLogs = getWorkerLogs;
 exports.listSecrets = listSecrets;
 exports.updateSecret = updateSecret;
@@ -28,41 +39,23 @@ exports.createRoute = createRoute;
 exports.deleteRoute = deleteRoute;
 exports.getScriptContent = getScriptContent;
 exports.listDeployments = listDeployments;
-exports.getPagesProject = getPagesProject;
-exports.editPagesProject = editPagesProject;
-exports.listPagesDomains = listPagesDomains;
-exports.addPagesDomain = addPagesDomain;
-exports.removePagesDomain = removePagesDomain;
-exports.listPagesDeployments = listPagesDeployments;
-exports.deletePagesDeployment = deletePagesDeployment;
-exports.batchDeletePagesDeployments = batchDeletePagesDeployments;
 exports.listKvNamespaces = listKvNamespaces;
 exports.listD1Databases = listD1Databases;
 exports.listR2Buckets = listR2Buckets;
-exports.updatePagesBindings = updatePagesBindings;
 exports.getWorkersUsageToday = getWorkersUsageToday;
-exports.ensurePagesProject = ensurePagesProject;
-exports.getWorkerConfig = getWorkerConfig;
-exports.getPagesConfig = getPagesConfig;
-exports.applyWorkerConfigDiff = applyWorkerConfigDiff;
 const cfFactory_1 = require("./cfFactory");
 const proxyService_1 = require("./proxyService");
 const ssrfGuard_1 = require("./ssrfGuard");
-const accountRouter_1 = require("./accountRouter");
 const logger_1 = require("./logger");
 const staticAssets_1 = require("./staticAssets");
 Object.defineProperty(exports, "extractZipFiles", { enumerable: true, get: function () { return staticAssets_1.extractZipFiles; } });
-// Node `Buffer` is not directly assignable to the DOM `BlobPart` type under strict mode
-// (its backing store is typed as `ArrayBufferLike`, which may be a `SharedArrayBuffer`).
-// Copy into an ArrayBuffer-backed Uint8Array so it serializes cleanly as a binary multipart field.
+__exportStar(require("./pagesService"), exports);
+__exportStar(require("./workerConfig"), exports);
+// Node Buffer to Uint8Array for multipart serialization
 function bufferToBlobPart(buf) {
     const view = new Uint8Array(buf.byteLength);
     view.set(buf);
     return view;
-}
-// Pages 项目名称校验：Cloudflare 要求 ^[a-z0-9][a-z0-9-]*$
-function validatePagesProjectName(name) {
-    return /^[a-z0-9][a-z0-9-]*$/.test(name);
 }
 // 构造 Workers Assets manifest：路径以 "/" 开头，hash 与后端/Worker 资产算法一致。
 async function buildAssetsManifest(files) {
@@ -83,17 +76,6 @@ async function listWorkers(account) {
         scripts.push(script);
     }
     return scripts;
-}
-async function listPages(account) {
-    const accountId = account.account_id;
-    if (!accountId)
-        return [];
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    const projects = [];
-    for await (const project of cf.pages.projects.list({ account_id: accountId })) {
-        projects.push(project);
-    }
-    return projects;
 }
 const CF_BASE = 'https://api.cloudflare.com/client/v4';
 async function getAccountSubdomain(account) {
@@ -444,11 +426,6 @@ async function deleteWorker(account, name) {
     const cf = (0, cfFactory_1.getCfClient)(account);
     await cf.workers.scripts.delete(name, { account_id: accountId });
 }
-async function deletePagesProject(account, name) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    await cf.pages.projects.delete(name, { account_id: accountId });
-}
 async function getWorkerLogs(account, name) {
     const accountId = account.account_id;
     const cf = (0, cfFactory_1.getCfClient)(account);
@@ -628,161 +605,22 @@ async function listDeployments(account, scriptName) {
     const cf = (0, cfFactory_1.getCfClient)(account);
     return await cf.workers.scripts.deployments.list(scriptName, { account_id: accountId });
 }
-// ============ Pages Settings ============
-async function getPagesProject(account, projectName) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    return await cf.pages.projects.get(projectName, { account_id: accountId });
-}
-async function editPagesProject(account, projectName, params) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    const envVarsDebug = JSON.stringify(params?.deployment_configs?.production?.env_vars || params?.deployment_configs?.production?.env_vars);
-    console.log(`[DBG] editPagesProject ${projectName} productionEnvVars=${envVarsDebug}`);
-    console.log(`[DBG] editPagesProject ${projectName} fullParams=${JSON.stringify(params)}`);
-    const res = await cf.pages.projects.edit(projectName, { account_id: accountId, ...params });
-    console.log(`[DBG] editPagesProject resultEnvVars=${JSON.stringify(res?.deployment_configs?.production?.env_vars)}`);
-    return res;
-}
-async function listPagesDomains(account, projectName) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    const domains = [];
-    for await (const d of cf.pages.projects.domains.list(projectName, { account_id: accountId })) {
-        domains.push(d);
-    }
-    return domains;
-}
-async function addPagesDomain(account, projectName, hostname) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    // 1. Get Pages project info to find the real subdomain
-    let pagesSubdomain;
-    try {
-        const projectInfo = await cf.pages.projects.get(projectName, { account_id: accountId });
-        // Real subdomain format: {projectName}.{accountSubdomain}.pages.dev
-        pagesSubdomain = projectInfo.subdomain || `${projectName}.pages.dev`;
-        logger_1.appLogger.info(`[Pages Domain] Real subdomain: ${pagesSubdomain}`);
-    }
-    catch (e) {
-        // Fallback to old format if API fails
-        pagesSubdomain = `${projectName}.pages.dev`;
-        logger_1.appLogger.warn(`[Pages Domain] Failed to get project info, using fallback: ${pagesSubdomain}`);
-    }
-    // 2. Create the Pages domain association
-    const result = await cf.pages.projects.domains.create(projectName, { account_id: accountId, name: hostname });
-    // 3. Automatically create CNAME DNS record if zone is in the same account
-    try {
-        const allZones = await (0, accountRouter_1.getAllZones)();
-        const accountZones = allZones.filter(z => z.cfAccountId === account.id);
-        const matchingZone = accountZones.find((z) => hostname.endsWith('.' + z.name) || hostname === z.name);
-        if (matchingZone) {
-            const existing = [];
-            for await (const r of cf.dns.records.list({ zone_id: matchingZone.id, type: 'CNAME', name: { exact: hostname } })) {
-                existing.push(r);
-            }
-            if (existing.length === 0) {
-                await cf.dns.records.create({
-                    zone_id: matchingZone.id,
-                    type: 'CNAME',
-                    name: hostname,
-                    content: pagesSubdomain,
-                    proxied: true,
-                    ttl: 1,
-                });
-                logger_1.appLogger.info(`[Pages Domain] Created CNAME: ${hostname} → ${pagesSubdomain} (proxied)`);
-            }
-            else {
-                logger_1.appLogger.info(`[Pages Domain] CNAME already exists for ${hostname}, skipping`);
-            }
-        }
-        else {
-            logger_1.appLogger.warn(`[Pages Domain] No matching zone found for ${hostname}, DNS record not created`);
-        }
-    }
-    catch (dnsErr) {
-        logger_1.appLogger.error(`[Pages Domain] Failed to create DNS record: ${dnsErr}`);
-    }
-    return result;
-}
-async function removePagesDomain(account, projectName, hostname) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    // 1. Remove the Pages domain association
-    const result = await cf.pages.projects.domains.delete(projectName, hostname, { account_id: accountId });
-    // 2. Clean up CNAME DNS record
-    try {
-        const allZones = await (0, accountRouter_1.getAllZones)();
-        const accountZones = allZones.filter(z => z.cfAccountId === account.id);
-        const matchingZone = accountZones.find((z) => hostname.endsWith('.' + z.name) || hostname === z.name);
-        if (matchingZone) {
-            const records = [];
-            for await (const r of cf.dns.records.list({ zone_id: matchingZone.id, type: 'CNAME', name: { exact: hostname } })) {
-                records.push(r);
-            }
-            for (const r of records) {
-                if (r.content?.endsWith('.pages.dev')) {
-                    await cf.dns.records.delete(r.id, { zone_id: matchingZone.id });
-                    logger_1.appLogger.info(`[Pages Domain] Deleted CNAME: ${hostname} → ${r.content}`);
-                }
-            }
-        }
-    }
-    catch (dnsErr) {
-        logger_1.appLogger.error(`[Pages Domain] Failed to delete DNS record: ${dnsErr}`);
-    }
-    return result;
-}
-async function listPagesDeployments(account, projectName) {
-    const accountId = account.account_id;
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    const deps = [];
-    for await (const d of cf.pages.projects.deployments.list(projectName, { account_id: accountId })) {
-        deps.push(d);
-    }
-    return deps;
-}
-async function deletePagesDeployment(account, projectName, deploymentId) {
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    try {
-        await cf.pages.projects.deployments.delete(projectName, deploymentId, {
-            account_id: account.account_id,
-        });
-        return { success: true };
-    }
-    catch (err) {
-        logger_1.appLogger.error(`[Pages Deployment] Delete failed: ${deploymentId} — ${err?.message || err}`);
-        return { success: false, error: err?.message || String(err) };
-    }
-}
-/**
- * 批量删除 Pages 部署记录（受控并发，最多 3 条并行）
- */
-async function batchDeletePagesDeployments(account, projectName, ids) {
-    const CONCURRENCY = 3;
-    const results = [];
-    for (let i = 0; i < ids.length; i += CONCURRENCY) {
-        const batch = ids.slice(i, i + CONCURRENCY);
-        const batchResults = await Promise.allSettled(batch.map(id => deletePagesDeployment(account, projectName, id)));
-        batchResults.forEach((r, j) => {
-            if (r.status === 'fulfilled') {
-                results.push({ id: batch[j], ...r.value });
-            }
-            else {
-                results.push({ id: batch[j], success: false, error: String(r.reason) });
-            }
-        });
-    }
-    const succeeded = results.filter(r => r.success).length;
-    return { total: ids.length, succeeded, failed: ids.length - succeeded, results };
-}
 // ============ Cloudflare Resources (for Pages bindings) ============
+// P1-12/13: KV 命名空间列表 TTL 缓存（单进程内存；创建/删除后至多 60s 内可见，避免每次刷新打 CF）
+const KV_LIST_TTL_MS = 60 * 1000;
+const kvListCache = new Map();
 async function listKvNamespaces(account) {
+    const cacheKey = String(account.account_id);
+    const cached = kvListCache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < KV_LIST_TTL_MS) {
+        return cached.data;
+    }
     const cf = (0, cfFactory_1.getCfClient)(account);
     const items = [];
     for await (const ns of cf.kv.namespaces.list({ account_id: account.account_id })) {
         items.push(ns);
     }
+    kvListCache.set(cacheKey, { data: items, fetchedAt: Date.now() });
     return items;
 }
 async function listD1Databases(account) {
@@ -797,10 +635,6 @@ async function listR2Buckets(account) {
     const cf = (0, cfFactory_1.getCfClient)(account);
     const resp = await cf.r2.buckets.list({ account_id: account.account_id });
     return resp?.buckets || [];
-}
-// Update Pages project bindings via deployment_configs
-async function updatePagesBindings(account, projectName, deploymentConfigs) {
-    return await editPagesProject(account, projectName, { deployment_configs: deploymentConfigs });
 }
 function getTodayMidnightUTC() {
     const now = new Date();
@@ -859,7 +693,7 @@ async function getWorkersUsageToday(account) {
     };
     let resp;
     try {
-        resp = await (0, proxyService_1.proxyFetch)(fetchUrl, fetchInit, 300000, undefined, account);
+        resp = await (0, proxyService_1.proxyFetch)(fetchUrl, fetchInit, 12000, undefined, account);
     }
     catch (e) {
         logger_1.appLogger.error(`[Workers Usage] Fetch failed for ${account.name}: ${e}\n[DEBUG curl] ${(0, proxyService_1.buildCurlCommand)(fetchUrl, fetchInit)}`);
@@ -897,178 +731,5 @@ async function getWorkersUsageToday(account) {
         subrequests: totalSubrequests,
         cpuTimeMs: Math.round(totalCpuUs / 1000),
     };
-}
-// 确保 Pages 项目存在，已存在时忽略 409 错误
-async function ensurePagesProject(account, projectName) {
-    const accountId = account.account_id;
-    if (!accountId)
-        throw new Error('Account ID is required');
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    try {
-        await cf.pages.projects.create({ account_id: accountId, name: projectName, production_branch: 'main' });
-    }
-    catch (e) {
-        if (e?.status !== 409)
-            throw e; // 409 = already exists, ignore
-    }
-}
-async function getWorkerConfig(account, name) {
-    const authHeaders = (0, cfFactory_1.getAuthHeaders)(account);
-    const resp = await (0, proxyService_1.proxyFetch)(`${CF_BASE}/accounts/${account.account_id}/workers/scripts/${name}`, { headers: authHeaders }, 30000, undefined, account);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const contentType = (resp.headers.get('content-type') || '');
-    const vars = [];
-    const bindings = [];
-    const mapBinding = (b) => {
-        if (b.type === 'plain_text')
-            vars.push({ name: b.name, value: b.text ?? '', secret: false });
-        else if (b.type === 'secret_text')
-            vars.push({ name: b.name, value: null, secret: true });
-        else {
-            // 归一化为前端意图类型，并保留高级绑定的参数字段供重部署预填回填
-            const intentType = b.type === 'durable_object_namespace' ? 'durable_object' :
-                b.type === 'kv_namespace' ? 'kv' :
-                    b.type === 'r2_bucket' ? 'r2' : b.type;
-            bindings.push({
-                type: intentType, name: b.name, mode: 'existing',
-                resourceName: b.namespace_id || b.id || b.bucket_name || undefined,
-                ...(intentType === 'durable_object' ? { className: b.class_name, scriptName: b.script_name } : {}),
-                ...(intentType === 'service' ? { service: b.service, environment: b.environment } : {}),
-                ...(intentType === 'queue' ? { queueName: b.queue_name } : {}),
-            });
-        }
-    };
-    // 1) multipart metadata part（非版本化 worker 的 GET /scripts/:name 返回 bindings）
-    if (/multipart\/form-data/i.test(contentType)) {
-        const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-        const boundary = boundaryMatch?.[1] || boundaryMatch?.[2];
-        if (boundary) {
-            const delim = Buffer.from(`--${boundary}`);
-            const findIndex = (hay, needle, from = 0) => {
-                outer: for (let i = from; i <= hay.length - needle.length; i++) {
-                    for (let j = 0; j < needle.length; j++)
-                        if (hay[i + j] !== needle[j])
-                            continue outer;
-                    return i;
-                }
-                return -1;
-            };
-            let pos = findIndex(buf, delim);
-            while (pos >= 0 && pos < buf.length) {
-                const next = findIndex(buf, delim, pos + delim.length);
-                const seg = next < 0 ? buf.subarray(pos + delim.length) : buf.subarray(pos + delim.length, next);
-                if (seg.length > 0) {
-                    const headerEnd = findIndex(seg, Buffer.from('\r\n\r\n'));
-                    if (headerEnd >= 0 && /name="metadata"/i.test(seg.subarray(0, headerEnd).toString())) {
-                        let body = seg.subarray(headerEnd + 4);
-                        if (body.length >= 2 && body[body.length - 2] === 0x0d && body[body.length - 1] === 0x0a)
-                            body = body.subarray(0, body.length - 2);
-                        try {
-                            const meta = JSON.parse(body.toString());
-                            for (const b of (meta.bindings || []))
-                                mapBinding(b);
-                        }
-                        catch { /* metadata 解析失败忽略，走版本化 fallback */ }
-                    }
-                }
-                if (next < 0)
-                    break;
-                pos = next;
-            }
-        }
-    }
-    // 2) 版本化 fallback：版本化 worker 的 GET /scripts/:name 不返回 bindings，
-    //    必须查 Versions API（当前部署版本的 resources.bindings）
-    if (vars.length === 0 && bindings.length === 0) {
-        try {
-            const cf = (0, cfFactory_1.getCfClient)(account);
-            const deps = await cf.workers.scripts.deployments.list(name, { account_id: account.account_id });
-            const latest = (deps?.deployments || deps?.result?.deployments || [])[0];
-            const vid = latest?.versions?.[0]?.version_id;
-            if (vid) {
-                const v = await cf.workers.scripts.versions.get(name, vid, { account_id: account.account_id });
-                const raw = (v?.resources?.bindings || v?.result?.resources?.bindings || []);
-                for (const b of raw)
-                    mapBinding(b);
-            }
-        }
-        catch { /* 读回失败静默，前端有降级提示 */ }
-    }
-    return { vars, bindings };
-}
-async function getPagesConfig(account, name) {
-    const cf = (0, cfFactory_1.getCfClient)(account);
-    const project = await cf.pages.projects.get(name, { account_id: account.account_id });
-    const cfg = project?.deployment_configs?.production || {};
-    const vars = [];
-    const bindings = [];
-    for (const [k, v] of Object.entries(cfg.env_vars || {})) {
-        const isSecret = v?.type === 'secret_text';
-        vars.push({ name: k, value: isSecret ? null : (v?.value ?? ''), secret: isSecret });
-    }
-    for (const [name, v] of Object.entries(cfg.kv_namespaces || {}))
-        bindings.push({ type: 'kv', name, resourceName: v?.namespace_id, mode: 'existing' });
-    for (const [name, v] of Object.entries(cfg.d1_databases || {}))
-        bindings.push({ type: 'd1', name, resourceName: v?.id, mode: 'existing' });
-    for (const [name, v] of Object.entries(cfg.r2_buckets || {}))
-        bindings.push({ type: 'r2', name, resourceName: v?.name, mode: 'existing' });
-    if (cfg.ai?.binding)
-        bindings.push({ type: 'ai', name: cfg.ai.binding, mode: 'existing' });
-    return { vars, bindings };
-}
-// 全量覆盖 + diff：
-// - plain/资源绑定有变化 → 用 scriptContent（或拉取现有代码）重传 deployWorker
-// - 仅 secrets 变化 → 只调 updateSecret/deleteSecret，不重传代码
-async function applyWorkerConfigDiff(account, name, opts) {
-    const current = await getWorkerConfig(account, name);
-    const currentPlain = new Map(current.vars.filter(v => !v.secret).map(v => [v.name, v.value || '']));
-    const currentSecretNames = new Set(current.vars.filter(v => v.secret).map(v => v.name));
-    const targetPlain = new Map((opts.vars || []).filter(v => !v.secret && !v.keep).map(v => [v.name, v.value || '']));
-    const targetSecretNames = new Set((opts.vars || []).filter(v => v.secret).map(v => v.name));
-    const plainChanged = targetPlain.size !== currentPlain.size
-        || [...targetPlain.entries()].some(([k, val]) => currentPlain.get(k) !== val);
-    // 指纹只比较（类型:名称）集合——current.bindings 不含资源 id，opts.bindings 含 id，比较语义集合即可
-    // secret 由 secrets API 独立管理：剔除 secret_text，避免新增/修改 secret 误触发代码重传
-    // 写入侧为 CF 原始类型（kv_namespace 等），比较前统一归一化为前端意图类型（与读取侧 getWorkerConfig 一致）
-    const toIntentType = (type) => type === 'durable_object_namespace' ? 'durable_object' :
-        type === 'kv_namespace' ? 'kv' :
-            type === 'r2_bucket' ? 'r2' : type;
-    const bindingFingerprint = (arr) => JSON.stringify((arr || []).filter((b) => b.type !== 'secret_text').map((b) => `${toIntentType(b.type)}:${b.name}`).sort());
-    const bindingsChanged = bindingFingerprint(opts.bindings) !== bindingFingerprint(current.bindings);
-    console.log(`[DBG] applyWorkerConfigDiff name=${name} vars=${JSON.stringify((opts.vars || []).map((v) => `${v.name}:${v.secret ? 'S' : 'P'}${v.keep ? '(keep)' : ''}`))} plainChanged=${plainChanged} bindingsChanged=${bindingsChanged}`);
-    // 删除：现有 secret 不在目标集合
-    for (const s of currentSecretNames) {
-        if (!targetSecretNames.has(s)) {
-            try {
-                await deleteSecret(account, name, s);
-            }
-            catch { /* 删除失败不阻塞 */ }
-        }
-    }
-    if (plainChanged || bindingsChanged) {
-        let content;
-        if (opts.scriptContent !== undefined && opts.scriptContent !== null)
-            content = opts.scriptContent;
-        else if (opts.packageZip)
-            content = '';
-        else
-            content = await getScriptContent(account, name); // 复用现有代码
-        console.log(`[DBG] redeploy content type=${typeof content} length=${Buffer.isBuffer(content) ? content.length : content.length}`);
-        await deployWorker(account, name, content, {
-            bindings: opts.bindings,
-            // 版本化 worker 下 PUT 只创建版本不部署，必须显式创建 deployment 才会上线（否则重部署的 vars/bindings 不生效）
-            createDeployment: true,
-            ...(opts.packageZip ? { packageZip: opts.packageZip, mainModule: opts.mainModule } : {}),
-        });
-        const after = await getWorkerConfig(account, name);
-        console.log(`[DBG] redeploy after vars=${JSON.stringify(after.vars)} bindings=${JSON.stringify(after.bindings)}`);
-    }
-    // 新增/更新 secrets（keep=true 或值为空则跳过）
-    for (const v of opts.vars || []) {
-        if (!v.secret || !v.name || v.keep)
-            continue;
-        if (v.value)
-            await updateSecret(account, name, v.name, 'secret_text', v.value);
-    }
 }
 //# sourceMappingURL=workerService.js.map

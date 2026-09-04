@@ -5,6 +5,7 @@ exports.getModelSpeakerEnum = getModelSpeakerEnum;
 exports.resolveTtsSpeaker = resolveTtsSpeaker;
 exports.extractTtsAdvancedParams = extractTtsAdvancedParams;
 exports.buildTtsCfBody = buildTtsCfBody;
+exports.modelRequiresWorkersPaid = modelRequiresWorkersPaid;
 exports.getAvailableModels = getAvailableModels;
 exports.getAiUsageToday = getAiUsageToday;
 const cfFactory_1 = require("./cfFactory");
@@ -155,33 +156,51 @@ function buildTtsCfBody(schema, input, voice, voiceMap, options) {
     }
     return { body, speaker };
 }
+/**
+ * 判断模型是否需要付费 Workers AI 计划（require_workers_paid）。
+ * Cloudflare 模型元数据（/ai/models/search）标记方式：
+ *  1. properties 数组里的 { property_id: 'require_workers_paid', value: 'true' }（注意 value 是字符串而非布尔）
+ *  2. 顶层字段 require_workers_paid（布尔或字符串）
+ * 注意：不要用 price/价格做兜底——CF 上几乎所有模型都带价格（按 neurons 计费，
+ * 超出每日免费额度才收费），价格存在 ≠ 需要付费计划账号。只有 require_workers_paid
+ * 标记才表示"仅限 Workers Paid 计划账号调用"。
+ */
+function isTruthyValue(v) {
+    return v === true || v === 'true' || v === 1 || v === '1';
+}
+function modelRequiresWorkersPaid(m) {
+    const props = Array.isArray(m?.properties) ? m.properties : [];
+    if (props.some((p) => p?.property_id === 'require_workers_paid' && isTruthyValue(p?.value)))
+        return true;
+    if (isTruthyValue(m?.require_workers_paid))
+        return true;
+    return false;
+}
 async function getAvailableModels(account, taskFilter) {
     if (!account.account_id) {
         throw new Error(`账户 "${account.name}" 缺少 Cloudflare Account ID，请点击"测试连接"以获取`);
     }
-    const cfAny = (0, cfFactory_1.getCfClient)(account);
-    const models = [];
-    let count = 0;
-    for await (const model of cfAny.ai.models.list({ account_id: account.account_id })) {
-        const m = model;
-        // Log first model structure for debugging
-        if (count === 0) {
-            logger_1.appLogger.debug(`[AI Models] Sample model structure: ${JSON.stringify(m, null, 2).slice(0, 500)}`);
-        }
-        count++;
-        // 如果指定了任务过滤，只返回匹配的模型
-        if (taskFilter) {
-            const taskName = m.task?.name || m.task || '';
-            // Normalize: convert both to lowercase and replace hyphens with spaces for matching
-            // e.g., "text-generation" matches "Text Generation"
-            const normalizedTaskName = taskName.toLowerCase().replace(/-/g, ' ');
-            const normalizedFilter = taskFilter.toLowerCase().replace(/-/g, ' ');
-            if (!normalizedTaskName.includes(normalizedFilter))
-                continue;
-        }
-        models.push(m);
+    // 使用 raw REST /ai/models/search：返回的模型对象含 properties（含 require_workers_paid 标记）。
+    // 注意：cloudflare SDK 的 ai.models.list 返回结构不含 properties，无法拿到付费计划标记。
+    const url = `https://api.cloudflare.com/client/v4/accounts/${account.account_id}/ai/models/search`;
+    const headers = { 'Content-Type': 'application/json', ...(0, cfFactory_1.getAuthHeaders)(account) };
+    const resp = await (0, proxyService_1.proxyFetch)(url, { method: 'GET', headers }, 30000, undefined, account);
+    if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`获取模型列表失败 (HTTP ${resp.status}): ${errText.slice(0, 300)}`);
     }
-    logger_1.appLogger.debug(`[AI Models] Total: ${count}, Filtered (${taskFilter}): ${models.length}`);
+    const json = await resp.json();
+    let models = Array.isArray(json?.result) ? json.result : [];
+    logger_1.appLogger.debug(`[AI Models] Total: ${models.length}`);
+    // 如果指定了任务过滤，只返回匹配的模型
+    if (taskFilter) {
+        const normalizedFilter = taskFilter.toLowerCase().replace(/-/g, ' ');
+        models = models.filter((m) => {
+            const taskName = m.task?.name || m.task || '';
+            const normalizedTaskName = taskName.toLowerCase().replace(/-/g, ' ');
+            return normalizedTaskName.includes(normalizedFilter);
+        });
+    }
     return models;
 }
 async function getAiUsageToday(account) {
@@ -224,18 +243,13 @@ async function getAiUsageToday(account) {
             variables: { accountTag: accountId, start: todayStart, end: todayEnd },
         }),
     };
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
     let resp;
     try {
-        resp = await (0, proxyService_1.proxyFetch)(fetchUrl, { ...fetchInit, signal: controller.signal }, 300000, undefined, account);
+        resp = await (0, proxyService_1.proxyFetch)(fetchUrl, fetchInit, 12000, undefined, account);
     }
     catch (e) {
         logger_1.appLogger.error(`[AI Usage] Fetch failed for ${account.name}: ${e}\n[DEBUG curl] ${(0, proxyService_1.buildCurlCommand)(fetchUrl, fetchInit)}`);
-        throw new Error(`AI usage fetch failed for ${account.name}: ${e}`);
-    }
-    finally {
-        clearTimeout(timeout);
+        throw new Error(`AI usage fetch failed for ${account.name}: ${e}`, { cause: e });
     }
     if (!resp.ok)
         throw new Error(`AI usage HTTP ${resp.status} for ${account.name}`);

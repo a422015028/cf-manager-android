@@ -20,6 +20,7 @@ exports.assertUrlSafe = assertUrlSafe;
 exports.fetchScriptSafely = fetchScriptSafely;
 const promises_1 = __importDefault(require("node:dns/promises"));
 const node_net_1 = __importDefault(require("node:net"));
+const config_1 = require("../config");
 const MAX_SCRIPT_SIZE = 5 * 1024 * 1024; // 5 MiB
 function isPrivateIp(ip) {
     if (node_net_1.default.isIPv4(ip)) {
@@ -53,7 +54,7 @@ function isPrivateIp(ip) {
     return false;
 }
 function getAllowlist() {
-    const raw = process.env.WORKER_DEPLOY_URL_ALLOWLIST;
+    const raw = config_1.config.workerDeployUrlAllowlist;
     if (!raw)
         return null;
     const list = raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);

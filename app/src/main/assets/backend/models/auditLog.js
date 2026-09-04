@@ -11,12 +11,13 @@ function createAuditLog(accountId, action, target, detail, status) {
         .run(accountId, action, target, detail, status);
 }
 function getRecentLogs(limit = 20) {
+    const safeLimit = Math.min(Math.max(1, limit), 200);
     return (0, db_1.getDb)()
         .prepare(`SELECT a.*, acc.name AS account_name
        FROM audit_log a
        LEFT JOIN accounts acc ON a.account_id = acc.id
        ORDER BY a.created_at DESC LIMIT ?`)
-        .all(limit);
+        .all(safeLimit);
 }
 function queryLogs(filter = {}) {
     const conditions = [];
@@ -34,7 +35,7 @@ function queryLogs(filter = {}) {
         params.push(filter.endDate);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filter.limit ?? 100;
+    const limit = Math.min(Math.max(1, filter.limit ?? 100), 500);
     return (0, db_1.getDb)()
         .prepare(`SELECT a.*, acc.name AS account_name
        FROM audit_log a

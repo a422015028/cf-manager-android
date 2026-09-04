@@ -3,7 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deployTriggers = deployTriggers;
 const cfFactory_1 = require("../cfFactory");
 const logger_1 = require("../logger");
-const CF_BASE = 'https://api.cloudflare.com/client/v4';
 /**
  * 部署触发器 — Cron Schedules + Custom Routes。
  * 所有操作均为软失败（失败仅记录 warning，不中断部署）。
