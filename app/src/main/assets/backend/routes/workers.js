@@ -8,6 +8,7 @@ const multer_1 = __importDefault(require("multer"));
 const account_1 = require("../models/account");
 const auditLog_1 = require("../models/auditLog");
 const logger_1 = require("../services/logger");
+const concurrent_1 = require("../utils/concurrent");
 const routeUtils_1 = require("./routeUtils");
 const workerService_1 = require("../services/workerService");
 const bindings_1 = require("../services/bindings");
@@ -37,7 +38,7 @@ function toAssetsOptions(file) {
     };
 }
 // 从 multipart 表单中解析 JSON 字符串字段；空/非法返回空数组
-function parseJsonField(raw, field) {
+function parseJsonField(raw, _field) {
     if (raw === undefined || raw === null || raw === '')
         return [];
     if (typeof raw === 'string') {
@@ -49,17 +50,6 @@ function parseJsonField(raw, field) {
         }
     }
     return raw;
-}
-// 受控并发（对齐 worker 端 batch delete 的 CONCURRENCY=3 模式）
-async function mapConcurrent(items, limit, fn) {
-    let idx = 0;
-    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-        while (idx < items.length) {
-            const current = items[idx++];
-            await fn(current);
-        }
-    });
-    await Promise.all(workers);
 }
 // 演示账户：拦截所有销毁/删除类操作（DELETE 等）
 router.use(routeUtils_1.demoDestructiveGuard);
@@ -581,7 +571,7 @@ router.put('/:accountId/pages/:name/bindings', async (req, res, next) => {
 router.get('/summary', async (_req, res, next) => {
     try {
         const accounts = (0, account_1.getActiveAccountsByFeature)('workers');
-        const results = await Promise.all(accounts.map(async (account) => {
+        const results = await (0, concurrent_1.mapConcurrent)(accounts, 6, async (account) => {
             try {
                 const [usageRes, workersRes, pagesRes] = await Promise.allSettled([
                     (0, workerService_1.getWorkersUsageToday)(account),
@@ -599,7 +589,7 @@ router.get('/summary', async (_req, res, next) => {
                 logger_1.appLogger.error(`[Summary] Failed for ${account.name}: ${err}`);
                 return { accountId: account.id, accountName: account.name, requests: 0, errors: 0, subrequests: 0, cpuTimeMs: 0, workerCount: 0, pagesCount: 0 };
             }
-        }));
+        });
         res.json(results);
     }
     catch (err) {
@@ -643,7 +633,7 @@ router.get('/usage', async (_req, res, next) => {
 // ============ Batch Deploy ============
 router.post('/batch-deploy', uploadWorkerAssets.fields([{ name: 'script' }, { name: 'assets' }]), async (req, res, next) => {
     try {
-        const { targets, url: scriptUrl } = req.body;
+        const { url: scriptUrl } = req.body;
         const files = req.files;
         const assetsOpts = toAssetsOptions(files.assets?.[0]);
         const scriptFile = files.script?.[0];
@@ -667,7 +657,7 @@ router.post('/batch-deploy', uploadWorkerAssets.fields([{ name: 'script' }, { na
         }
         console.log(`[DBG] batch-deploy targets=${parsedTargets.length} isRedeploy=${isRedeploy} isZip=${isZip} vars=${JSON.stringify(vars.map((v) => `${v.name}:${v.secret ? 'S' : 'P'}${v.keep ? '(keep)' : ''}`))} bindings=${JSON.stringify(bindingsInput.map((b) => b.type + ':' + b.name))}`);
         const results = [];
-        await mapConcurrent(parsedTargets, 3, async (t) => {
+        await (0, concurrent_1.mapConcurrent)(parsedTargets, 3, async (t) => {
             try {
                 const account = (0, account_1.getAccountById)(t.accountId);
                 if (!account) {
@@ -732,7 +722,7 @@ router.post('/batch-deploy-pages', uploadPages.single('zipFile'), async (req, re
             return;
         }
         const results = [];
-        await mapConcurrent(parsedTargets, 3, async (t) => {
+        await (0, concurrent_1.mapConcurrent)(parsedTargets, 3, async (t) => {
             try {
                 const account = (0, account_1.getAccountById)(t.accountId);
                 if (!account) {

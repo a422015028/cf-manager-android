@@ -6,8 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.appLogger = exports.apiLogger = exports.v1Logger = void 0;
 const winston_1 = __importDefault(require("winston"));
 const winston_daily_rotate_file_1 = __importDefault(require("winston-daily-rotate-file"));
-const path_1 = __importDefault(require("path"));
-const logDir = process.env.LOG_DIR || path_1.default.join(__dirname, '..', '..', 'data', 'logs');
+const config_1 = require("../config");
+const logDir = config_1.config.logDir;
 function createLogger(filename) {
     const fileTransport = new winston_daily_rotate_file_1.default({
         dirname: logDir,

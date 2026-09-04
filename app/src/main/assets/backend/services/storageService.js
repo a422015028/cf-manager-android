@@ -126,7 +126,7 @@ async function getR2Object(account, bucketName, key) {
     const cf = (0, cfFactory_1.getCfClient)(account);
     return cf.r2.buckets.objects.get(bucketName, key, { account_id: acctId(account) });
 }
-async function putR2Object(account, bucketName, key, body, contentType) {
+async function putR2Object(account, bucketName, key, body, _contentType) {
     const cf = (0, cfFactory_1.getCfClient)(account);
     await cf.r2.buckets.objects.upload(bucketName, key, body, { account_id: acctId(account) });
 }

@@ -9,6 +9,7 @@ const account_1 = require("../models/account");
 const aiService_1 = require("./aiService");
 const workerService_1 = require("./workerService");
 const logger_1 = require("./logger");
+const concurrent_1 = require("../utils/concurrent");
 const LIMITS = {
     workers_requests: 100000,
     ai_neurons: 10000,
@@ -22,9 +23,22 @@ const RESOURCE_FEATURE = {
     ai_neurons: 'ai',
     browser_render_seconds: 'browser_render',
 };
+/** 并发同步最大并发数 */
+const SYNC_CONCURRENCY = 6;
+/** 正在执行中的同步 Promise，用于防重入与并发请求去重 */
+let inFlightSyncPromise = null;
 async function syncUsageFromCloudflare() {
+    if (inFlightSyncPromise) {
+        return inFlightSyncPromise;
+    }
+    inFlightSyncPromise = executeSyncFromCloudflare().finally(() => {
+        inFlightSyncPromise = null;
+    });
+    return inFlightSyncPromise;
+}
+async function executeSyncFromCloudflare() {
     const accounts = (0, account_1.getActiveAccounts)();
-    await Promise.all(accounts.map(async (account) => {
+    await (0, concurrent_1.mapConcurrent)(accounts, SYNC_CONCURRENCY, async (account) => {
         if ((0, account_1.hasFeature)(account, 'ai')) {
             try {
                 const aiUsage = await (0, aiService_1.getAiUsageToday)(account);
@@ -59,7 +73,7 @@ async function syncUsageFromCloudflare() {
                 logger_1.appLogger.error(`[Sync] Workers usage failed for ${account.name}: ${e}`);
             }
         }
-    }));
+    });
 }
 function getQuotaSummary() {
     const accounts = (0, account_1.getActiveAccounts)();

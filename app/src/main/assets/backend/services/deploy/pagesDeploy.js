@@ -159,7 +159,6 @@ async function deployPages(account, name, files, opts = {}) {
         }
     }
     // Step 1: 获取 upload JWT
-    let jwt = '';
     const fetchJwt = async () => {
         const resp = await (0, proxyService_1.proxyFetch)(`${CF_BASE}/accounts/${accountId}/pages/projects/${name}/upload-token`, {
             headers: { ...deployHeaders },
@@ -171,7 +170,7 @@ async function deployPages(account, name, files, opts = {}) {
             throw new Error(`Upload token response missing jwt: ${JSON.stringify(json)}`);
         return json.result.jwt;
     };
-    jwt = await fetchJwt();
+    const jwt = await fetchJwt();
     // Step 2: 计算 hash + check-missing
     const manifest = {};
     const hashToFile = new Map();

@@ -15,5 +15,7 @@ exports.config = {
     dbPath: process.env.DB_PATH || path_1.default.join(__dirname, '..', 'data', 'cf-manager.db'),
     proxyUrl: process.env.PROXY_URL || '',
     demoAccountIds: process.env.DEMO_ACCOUNT_IDS || '',
+    logDir: process.env.LOG_DIR || path_1.default.join(__dirname, '..', '..', 'data', 'logs'),
+    workerDeployUrlAllowlist: process.env.WORKER_DEPLOY_URL_ALLOWLIST || '',
 };
 //# sourceMappingURL=config.js.map

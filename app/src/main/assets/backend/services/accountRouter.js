@@ -74,7 +74,7 @@ const RESOURCE_FEATURE_MAP = {
 };
 function getAiAccountSnapshot() {
     const cached = quotaCache.get(AI_CACHE_KEY);
-    if (cached) {
+    if (cached && cached.length > 0) {
         logger_1.appLogger.debug(`[AccountRouter] Using cached AI snapshot: ${cached.length} accounts, first=${cached[0]?.account.name}, used=${cached[0]?.used}`);
         return cached;
     }
@@ -181,6 +181,9 @@ function removeAccountFromAiCache(accountId) {
         const idx = list.findIndex(r => r.account.id === accountId);
         if (idx >= 0) {
             const removed = list.splice(idx, 1)[0];
+            if (list.length === 0) {
+                quotaCache.del(AI_CACHE_KEY);
+            }
             logger_1.appLogger.info(`[AccountRouter] Removed account ${accountId} (${removed.account.name}) from AI cache, ${list.length} remaining`);
         }
         else {

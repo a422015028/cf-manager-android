@@ -20,20 +20,22 @@ function isDemoAccountId(id) {
     return config_1.config.demoAccountIds.split(',').map(s => parseInt(s.trim(), 10)).includes(id);
 }
 /**
- * 演示账户「毁灭性操作」保护中间件。
- * 拦截所有针对演示账户的销毁/删除类操作，返回 403 DEMO_PROTECTED：
- *  - 所有 DELETE 请求（删 KV 命名空间/键、删 D1 库、删 R2 桶/对象、删 Worker/Pages、删 Secret/Domain/Route、删 DNS 记录等）
- *  - 批量删除类 POST 请求（KV/R2 的 bulk-delete）
- * 注：D1 写查询（INSERT/UPDATE/DELETE/DROP/ALTER 等）在 storage 路由的 query handler 内单独拦截。
+ * 演示账户「只读」保护中间件。
+ * 演示账户应保持只读：拦截除 GET/HEAD/OPTIONS 外的所有写操作（含 PUT/PATCH/POST/DELETE），
+ * 命中即返回 403 DEMO_PROTECTED。
+ * 例外：D1 查询接口（POST .../d1/:dbId/query）属于只读 SELECT，允许执行；其写 SQL（INSERT/UPDATE/DELETE 等）
+ * 已在 storage 路由的 query handler 内单独拦截。
  */
 function demoDestructiveGuard(req, res, next) {
     const method = req.method.toUpperCase();
-    const isDestructive = method === 'DELETE' ||
-        (method === 'POST' && /\/bulk-delete$/.test(req.path || ''));
+    const path = req.path || '';
+    const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+    const isD1Query = method === 'POST' && /\/d1\/[^/]+\/query$/.test(path);
+    const isDestructive = isWrite && !isD1Query;
     if (isDestructive) {
         const accountId = parseInt(req.params.accountId, 10);
         if (!isNaN(accountId) && isDemoAccountId(accountId)) {
-            res.status(403).json({ error: { code: 'DEMO_PROTECTED', message: '演示账户不可执行删除/销毁操作' } });
+            res.status(403).json({ error: { code: 'DEMO_PROTECTED', message: '演示账户不可被修改或删除' } });
             return;
         }
     }

@@ -33,7 +33,7 @@ function getCfClient(account) {
             return new cloudflare_1.default({ apiToken: (0, encryptionService_1.decrypt)(account.api_token), ...opts });
         }
         catch (err) {
-            throw new Error(`Failed to decrypt credentials for account ${account.id}: ${err}`);
+            throw new Error(`Failed to decrypt credentials for account ${account.id}: ${err}`, { cause: err });
         }
     }
     if (!account.api_key)
@@ -44,7 +44,7 @@ function getCfClient(account) {
         return new cloudflare_1.default({ apiKey: (0, encryptionService_1.decrypt)(account.api_key), apiEmail: account.email, ...opts });
     }
     catch (err) {
-        throw new Error(`Failed to decrypt credentials for account ${account.id}: ${err}`);
+        throw new Error(`Failed to decrypt credentials for account ${account.id}: ${err}`, { cause: err });
     }
 }
 function clearClientCache() {

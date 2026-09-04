@@ -5,6 +5,7 @@ const account_1 = require("../models/account");
 const aiService_1 = require("../services/aiService");
 const quotaUsage_1 = require("../models/quotaUsage");
 const accountRouter_1 = require("../services/accountRouter");
+const concurrent_1 = require("../utils/concurrent");
 const router = (0, express_1.Router)();
 /**
  * GET /api/ai/usage
@@ -18,7 +19,7 @@ router.get('/usage', async (_req, res, next) => {
     try {
         const today = new Date().toISOString().split('T')[0];
         const accounts = (0, account_1.getActiveAccounts)().filter(a => a.account_id);
-        const promises = accounts.map(async (account) => {
+        const result = await (0, concurrent_1.mapConcurrent)(accounts, 6, async (account) => {
             try {
                 const usage = await (0, aiService_1.getAiUsageToday)(account);
                 // 当 CF 返回非零值：使用 CF 数据更新本地计数
@@ -60,11 +61,6 @@ router.get('/usage', async (_req, res, next) => {
                 };
             }
         });
-        const results = await Promise.allSettled(promises);
-        // 提取成功的结果，过滤掉失败的
-        const result = results
-            .filter((r) => r.status === 'fulfilled' && r.value !== null)
-            .map(r => r.value);
         // 同步完成后全量刷新内存缓存
         (0, accountRouter_1.invalidateAiCache)();
         res.json(result);

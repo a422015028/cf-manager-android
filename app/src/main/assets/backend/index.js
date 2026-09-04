@@ -34,6 +34,7 @@ const browserRateLimiter_1 = require("./services/browserRateLimiter");
 const v1Logger_1 = require("./middleware/v1Logger");
 const apiLogger_1 = require("./middleware/apiLogger");
 const requestId_1 = require("./middleware/requestId");
+const canonicalize_1 = require("./middleware/canonicalize");
 const logger_1 = require("./services/logger");
 const node_cron_1 = __importDefault(require("node-cron"));
 const catalogSource_1 = require("./models/catalogSource");
@@ -46,6 +47,9 @@ app.use((0, cors_1.default)({
     credentials: false,
 }));
 app.use(express_1.default.json({ limit: '100mb' }));
+// 路径规范化（P1-4）：在 auth 与路由匹配之前改写 req.url，确保 Docker/Worker 两端对
+// 双斜杠/尾部斜杠/大小写变形路径的匹配结果一致，避免绕过或 404/500 差异。
+app.use(canonicalize_1.canonicalizeMiddleware);
 // Health check — before auth so Docker healthcheck works without API_SECRET
 app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
@@ -102,7 +106,20 @@ app.use('/api/v1', requestId_1.requestIdMiddleware);
 app.use('/api/v1', v1Logger_1.v1RequestLogger);
 app.use('/api/v1', openai_1.default);
 app.use('/api/v1', v1ErrorHandler_1.v1ErrorHandler); // OpenAI-format error handler (before global errorHandler)
-app.get('/api/quota', async (_req, res, next) => {
+app.get('/api/quota', async (req, res, next) => {
+    try {
+        const wantsSync = req.query.sync === 'true' || req.query.refresh === 'true';
+        if (wantsSync) {
+            await (0, quotaTracker_1.syncUsageFromCloudflare)();
+            (0, accountRouter_1.invalidateAiCache)();
+        }
+        res.json((0, quotaTracker_1.getQuotaSummary)());
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.post('/api/quota/sync', async (_req, res, next) => {
     try {
         await (0, quotaTracker_1.syncUsageFromCloudflare)();
         (0, accountRouter_1.invalidateAiCache)();
@@ -136,10 +153,10 @@ app.get('/api/audit-log/actions', (_req, res, next) => {
 });
 app.use(errorHandler_1.errorHandler);
 async function start() {
-    if (typeof db_1.initDbAsync === "function") {
+        if (typeof db_1.initDbAsync === "function") {
         await db_1.initDbAsync();
     }
-        (0, db_1.initDb)();
+    (0, db_1.initDb)();
     (0, taskScheduler_1.initScheduler)();
     (0, browserRateLimiter_1.initBrowserRateLimiter)();
     // Catalog refresh cron (every 6 hours)
@@ -155,11 +172,13 @@ async function start() {
         }
     });
     app.listen(config_1.config.port, () => {
-        logger_1.appLogger.info(`Server running on port ${config_1.config.port}`);
+        logger_1.appLogger.info(`Server running on port ${config_1.config.port} (ready)`);
     });
 }
 process.on('uncaughtException', (err) => {
     logger_1.appLogger.error(`[UNCAUGHT] ${err}`);
+    // 进程处于未知状态，交由编排器（Docker/K8s）重启，避免静默损坏
+    process.exit(1);
 });
 process.on('unhandledRejection', (err) => {
     logger_1.appLogger.error(`[UNHANDLED_REJECTION] ${err}`);
