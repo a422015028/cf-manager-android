@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getAccountOr404 = getAccountOr404;
 exports.isDemoAccountId = isDemoAccountId;
+exports.isDemoMode = isDemoMode;
 exports.demoDestructiveGuard = demoDestructiveGuard;
 const account_1 = require("../models/account");
 const config_1 = require("../config");
@@ -18,6 +19,14 @@ function isDemoAccountId(id) {
     if (!config_1.config.demoAccountIds)
         return false;
     return config_1.config.demoAccountIds.split(',').map(s => parseInt(s.trim(), 10)).includes(id);
+}
+/**
+ * 判断当前是否为演示（Demo）部署。
+ * 约定：配置了 DEMO_ACCOUNT_IDS 即视为演示实例（对外只读展示）。
+ * 用于禁用会把账户清单/凭证整体带出的功能（如 CSV 导出）。
+ */
+function isDemoMode() {
+    return !!config_1.config.demoAccountIds;
 }
 /**
  * 演示账户「只读」保护中间件。

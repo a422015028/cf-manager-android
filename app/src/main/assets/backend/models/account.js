@@ -69,8 +69,8 @@ function getAccountById(id) {
 }
 function createAccount(input) {
     const features = input.enabled_features || exports.ALL_FEATURES.join(',');
-    const stmt = (0, db_1.getDb)().prepare('INSERT INTO accounts (name, auth_type, api_token, api_key, email, account_id, enabled_features, password, proxy_url, proxy_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    const result = stmt.run(input.name, input.auth_type, input.api_token || null, input.api_key || null, input.email || null, input.account_id || null, features, input.password || null, input.proxy_url || '', input.proxy_enabled ?? 0);
+    const stmt = (0, db_1.getDb)().prepare('INSERT INTO accounts (name, auth_type, api_token, api_key, email, account_id, enabled_features, proxy_url, proxy_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(input.name, input.auth_type, input.api_token || null, input.api_key || null, input.email || null, input.account_id || null, features, input.proxy_url || '', input.proxy_enabled ?? 0);
     return result.lastInsertRowid;
 }
 function updateAccount(id, input) {

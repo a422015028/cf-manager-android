@@ -329,14 +329,11 @@ router.get('/:id/credentials', (req, res, next) => {
         }
         let api_token = null;
         let api_key = null;
-        let password = null;
         try {
             if (account.api_token)
                 api_token = (0, encryptionService_2.decrypt)(account.api_token);
             if (account.api_key)
                 api_key = (0, encryptionService_2.decrypt)(account.api_key);
-            if (account.password)
-                password = (0, encryptionService_2.decrypt)(account.password);
         }
         catch (e) {
             logger_1.appLogger.error(`[Account] 解密凭证失败 id=${id}: ${e}`);
@@ -351,7 +348,6 @@ router.get('/:id/credentials', (req, res, next) => {
             email: account.email,
             api_token,
             api_key,
-            password,
             account_id: account.account_id,
             proxy_url: account.proxy_url || '',
             proxy_enabled: account.proxy_enabled || 0,
@@ -643,9 +639,104 @@ router.post('/batch/proxy', (req, res, next) => {
         next(err);
     }
 });
+// ============ 导出 CSV ============
+// 列集与 POST /import-csv 严格对齐，导出文件可直接再导入（迁移到其他实例）：
+//   name,email,globalKey                  常驻列（globalKey = Cloudflare Global API Key，即库内 accounts.api_key）
+//   apiToken                              仅当导出范围内存在 token 认证账户时追加（该类型无邮箱，无法用 globalKey 表示）
+// 演示（Demo）部署下整体禁用：导出会把账户清单与凭证一并带出，与演示实例的只读定位冲突
+// 查询参数：
+//   ids=1,2,3                                    仅导出指定账户（优先级高于 filter）
+//   filter=all|active|unverified & search=xxx     按列表筛选条件导出
+//   includeCredentials=0                          不导出明文凭证（默认 1，含 apiKey/apiToken）
+router.get('/export-csv', (req, res, next) => {
+    try {
+        if ((0, routeUtils_1.isDemoMode)()) {
+            res.status(403).json({ error: { code: 'DEMO_PROTECTED', message: '演示模式下不支持导出账户' } });
+            return;
+        }
+        const includeCredentials = !['0', 'false'].includes(String(req.query.includeCredentials ?? '1').toLowerCase());
+        // 1) 选定待导出账户
+        let accounts;
+        let scopeDetail;
+        const idsRaw = String(req.query.ids ?? '').trim();
+        if (idsRaw) {
+            const ids = idsRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+            accounts = ids.map(id => (0, account_1.getAccountById)(id)).filter((a) => !!a);
+            scopeDetail = `ids=${idsRaw}`;
+        }
+        else {
+            const filter = req.query.filter;
+            const validFilters = ['all', 'active', 'unverified'];
+            const safeFilter = validFilters.includes(filter) ? filter : 'all';
+            const search = req.query.search || '';
+            accounts = collectAccountsForExport(safeFilter, search);
+            scopeDetail = `filter=${safeFilter} search=${search}`;
+        }
+        // 2) 组装 CSV
+        const hasTokenAccount = accounts.some(a => a.auth_type === 'token' && !!a.api_token);
+        const header = ['name', 'email', 'globalKey', ...(hasTokenAccount ? ['apiToken'] : [])];
+        const lines = [header.join(',')];
+        for (const a of accounts) {
+            let apiKey = '';
+            let apiToken = '';
+            // 演示账户凭证受保护，始终置空
+            if (includeCredentials && !(0, routeUtils_1.isDemoAccountId)(a.id)) {
+                try {
+                    if (a.api_key)
+                        apiKey = (0, encryptionService_2.decrypt)(a.api_key);
+                    if (a.api_token)
+                        apiToken = (0, encryptionService_2.decrypt)(a.api_token);
+                }
+                catch (e) {
+                    logger_1.appLogger.warn(`[Account:Export] 解密凭证失败 id=${a.id}，该行凭证留空: ${e}`);
+                }
+            }
+            const cells = [a.name, a.email || '', apiKey];
+            if (hasTokenAccount)
+                cells.push(apiToken);
+            lines.push(cells.map(toCsvCell).join(','));
+        }
+        // 记录一条汇总审计（逐账户记录会在批量导出时淹没审计日志，故只记汇总）
+        (0, auditLog_1.createAuditLog)(null, 'export_accounts_csv', `count=${accounts.length}`, `${scopeDetail} includeCredentials=${includeCredentials ? 1 : 0}`, 'success');
+        logger_1.appLogger.info(`[Account:Export] 导出 ${accounts.length} 个账户（${scopeDetail}，includeCredentials=${includeCredentials ? 1 : 0}）`);
+        const csv = '\uFEFF' + lines.join('\r\n') + '\r\n'; // 前置 BOM，便于 Excel 正确识别 UTF-8
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); // YYYYMMDDHHmmss
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="cf-manager-accounts-${stamp}.csv"`);
+        res.send(csv);
+    }
+    catch (err) {
+        next(err);
+    }
+});
+/**
+ * 按列表筛选条件取全量账户（listAccountsPaged 单页上限 500，需分页循环）
+ */
+function collectAccountsForExport(filter, search) {
+    const pageSize = 500;
+    const all = [];
+    for (let page = 1;; page++) {
+        const paged = (0, account_2.listAccountsPaged)({ page, pageSize, filter, search });
+        all.push(...paged.accounts);
+        if (paged.accounts.length === 0 || all.length >= paged.total)
+            break;
+    }
+    return all;
+}
+/**
+ * CSV 单元格转义：含逗号/换行/双引号时用双引号包裹，内部双引号翻倍
+ */
+function toCsvCell(value) {
+    const s = value === null || value === undefined ? '' : String(value);
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
 // ============ 批量导入 CSV ============
-// CSV 表头: email,password,apiKey
-// 按邮箱去重；账户名按规则从邮箱提取；单个账户错误不影响批量导入
+// 支持列（仅认下列 4 个列名，大小写不敏感，其余列一律忽略）：
+//   email + globalKey     global_key 账户（常驻）；globalKey = Global API Key，落库到 accounts.api_key
+//   apiToken              token 账户（无邮箱也可），与 globalKey 同时存在时以 globalKey 为准
+//   name                  账户名（可选，缺省由邮箱推导）
+// GET /export-csv 的导出文件可直接回灌，实现跨实例迁移
+// 去重：global_key 按邮箱，token 按 apiToken（密文含随机 IV，需解密后比对）；单个账户错误不影响其他行
 router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
     try {
         if (!req.file) {
@@ -659,47 +750,68 @@ router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
             return;
         }
         const header = rows[0].map(h => h.trim().toLowerCase());
-        const emailIdx = header.findIndex(h => h === 'email');
-        const apiKeyIdx = header.findIndex(h => h === 'apikey' || h === 'api_key');
-        const passwordIdx = header.findIndex(h => h === 'password');
-        if (emailIdx === -1 || apiKeyIdx === -1) {
-            res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'CSV 必须包含 email 和 apiKey 列' } });
+        const col = (...names) => header.findIndex(h => names.includes(h));
+        const emailIdx = col('email');
+        const apiKeyIdx = col('globalkey');
+        const apiTokenIdx = col('apitoken');
+        const nameIdx = col('name');
+        if (apiKeyIdx === -1 && apiTokenIdx === -1) {
+            res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'CSV 必须包含 globalKey 或 apiToken 列' } });
+            return;
+        }
+        if (emailIdx === -1 && apiTokenIdx === -1) {
+            res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'CSV 必须包含 email 或 apiToken 列' } });
             return;
         }
         // skipVerify=1 跳过凭证验证（秒级完成），适合大批量导入 + 后续手动测试
         const skipVerify = req.body?.skipVerify === '1' || req.body?.skipVerify === 'true' || req.query.skipVerify === '1';
         const dataRows = rows.slice(1);
         const results = [];
-        const seenEmails = new Set(); // 同批次内去重
+        const seenKeys = new Set(); // 同批次内去重：global_key 按邮箱，token 按凭证
         const pendingTasks = [];
         for (let i = 0; i < dataRows.length; i++) {
             const row = dataRows[i];
-            const email = (row[emailIdx] || '').trim();
-            const apiKey = (row[apiKeyIdx] || '').trim();
-            const password = passwordIdx !== -1 ? (row[passwordIdx] || '').trim() : '';
-            if (!email || !apiKey) {
-                results.push({ email: email || '(空)', name: '', status: 'error', message: '邮箱或 apiKey 为空' });
+            const cell = (idx) => (idx !== -1 ? (row[idx] || '').trim() : '');
+            const email = cell(emailIdx);
+            const apiKey = cell(apiKeyIdx);
+            const apiToken = cell(apiTokenIdx);
+            // token 认证（只有 apiToken）允许没有邮箱，故名称兜底为占位名
+            const authType = !apiKey && apiToken ? 'token' : 'global_key';
+            const name = cell(nameIdx) || (email ? (0, account_1.nameFromEmail)(email) : `未命名账户-${i + 1}`);
+            if (authType === 'global_key' && (!email || !apiKey)) {
+                results.push({ email: email || '(空)', name, status: 'error', message: 'global_key 账户需同时提供 email 与 apiKey' });
+                continue;
+            }
+            if (authType === 'token' && !apiToken) {
+                results.push({ email: email || '(空)', name, status: 'error', message: '缺少 apiToken' });
                 continue;
             }
             // 同批次内去重
-            if (seenEmails.has(email)) {
-                results.push({ email, name: (0, account_1.nameFromEmail)(email), status: 'skipped', message: 'CSV 内重复邮箱' });
+            const dedupeKey = authType === 'token' ? `token:${apiToken}` : `email:${email}`;
+            if (seenKeys.has(dedupeKey)) {
+                results.push({ email, name, status: 'skipped', message: authType === 'token' ? 'CSV 内重复的 apiToken' : 'CSV 内重复邮箱' });
                 continue;
             }
-            seenEmails.add(email);
+            seenKeys.add(dedupeKey);
             // 数据库去重
-            if ((0, account_1.getAccountByEmail)(email)) {
-                results.push({ email, name: (0, account_1.nameFromEmail)(email), status: 'skipped', message: '数据库已存在该邮箱' });
+            if (authType === 'global_key') {
+                if ((0, account_1.getAccountByEmail)(email)) {
+                    results.push({ email, name, status: 'skipped', message: '数据库已存在该邮箱' });
+                    continue;
+                }
+            }
+            else if (tokenAccountExists(apiToken)) {
+                results.push({ email, name, status: 'skipped', message: '数据库已存在该 apiToken' });
                 continue;
             }
             pendingTasks.push({
-                email, apiKey, password, name: (0, account_1.nameFromEmail)(email),
-                result: { email, name: (0, account_1.nameFromEmail)(email), status: 'success' },
+                authType, email, apiKey, apiToken, name,
+                result: { email, name, status: 'success' },
             });
         }
         // 处理单个任务：验证凭证 + 入库 + 自动获取 account_id
         async function processTask(task) {
-            const { email, apiKey, password, name } = task;
+            const { authType, email, apiKey, apiToken, name } = task;
             try {
                 // 验证 Cloudflare 凭证（可跳过）
                 if (!skipVerify) {
@@ -708,7 +820,9 @@ router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
                         const opts = {};
                         if (httpAgent)
                             opts.httpAgent = httpAgent;
-                        const tempCf = new cloudflare_1.default({ apiEmail: email, apiKey, ...opts });
+                        const tempCf = authType === 'token'
+                            ? new cloudflare_1.default({ apiToken, ...opts })
+                            : new cloudflare_1.default({ apiEmail: email, apiKey, ...opts });
                         await tempCf.user.get();
                     }
                     catch (e) {
@@ -719,11 +833,13 @@ router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
                 // 保存到数据库
                 const input = {
                     name,
-                    auth_type: 'global_key',
-                    email,
-                    api_key: (0, encryptionService_1.encrypt)(apiKey),
-                    password: password ? (0, encryptionService_1.encrypt)(password) : undefined,
+                    auth_type: authType,
+                    email: email || undefined,
                 };
+                if (authType === 'token')
+                    input.api_token = (0, encryptionService_1.encrypt)(apiToken);
+                else
+                    input.api_key = (0, encryptionService_1.encrypt)(apiKey);
                 const id = (0, account_1.createAccount)(input);
                 // 自动获取 account_id（跳过验证模式下也尝试获取，失败不阻断）
                 if (!skipVerify) {
@@ -750,7 +866,7 @@ router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
                     // 跳过验证模式：标记为未验证，后续通过「测试」按钮激活
                     (0, account_1.updateAccountStatus)(id, false);
                 }
-                (0, auditLog_1.createAuditLog)(id, 'import_account', name, `email=${email}${skipVerify ? ' (skipVerify)' : ''}`, 'success');
+                (0, auditLog_1.createAuditLog)(id, 'import_account', name, `auth_type=${authType}${email ? ` email=${email}` : ''}${skipVerify ? ' (skipVerify)' : ''}`, 'success');
                 task.result = { email, name, status: 'success' };
             }
             catch (e) {
@@ -779,8 +895,25 @@ router.post('/import-csv', uploadCsv.single('file'), async (req, res, next) => {
     }
 });
 /**
-* 简单 CSV 解析器：支持双引号包裹的字段和字段内的逗号/换行/双引号转义
+ * token 认证账户的密文含随机 IV，无法直接比对密文，需解密后比较明文
  */
+function tokenAccountExists(apiToken) {
+    for (const acc of (0, account_1.getAllAccounts)()) {
+        if (acc.auth_type !== 'token' || !acc.api_token)
+            continue;
+        try {
+            if ((0, encryptionService_2.decrypt)(acc.api_token) === apiToken)
+                return true;
+        }
+        catch {
+            // 解密失败（如更换过 ENCRYPTION_KEY）视为不匹配
+        }
+    }
+    return false;
+}
+/**
+* 简单 CSV 解析器：支持双引号包裹的字段和字段内的逗号/换行/双引号转义
+*/
 function parseCsv(text) {
     const rows = [];
     let row = [];
