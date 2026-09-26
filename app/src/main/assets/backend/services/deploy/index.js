@@ -370,7 +370,7 @@ async function deployTemplate(opts) {
             logger_1.appLogger.info(`[Store] Worker deployed: ${name}`);
             workerDeployed = true;
             // Step 2.5: Deploy triggers (cron + routes)
-            const triggerResult = await (0, triggers_1.deployTriggers)(account, name, template.crons || [], template.routes || []);
+            const triggerResult = await (0, triggers_1.deployTriggers)(account, name, template.crons, template.routes || []);
             warnings.push(...triggerResult.warnings);
         }
         // Step 3: Deploy pages

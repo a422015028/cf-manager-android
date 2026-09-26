@@ -20,6 +20,28 @@ const quotaUsage_1 = require("../models/quotaUsage");
 const routeUtils_1 = require("./routeUtils");
 const accountProbe_1 = require("../services/accountProbe");
 const router = (0, express_1.Router)();
+/**
+ * 探测账号的「可用功能」与「Workers 计划类型」并落库。
+ *
+ * - available_features：R2 等付费能力（探测不到则不写）
+ * - worker_plan：订阅列表探测（需 Account.Billing:Read）。探测失败/权限不足时保留现有值，
+ *   也就是「自动探测优先，探测不通才手工标注」——手工标注值不会被失败的探测清掉。
+ */
+async function probeAndStoreAccount(account) {
+    const [features, plan] = await Promise.all([
+        (0, accountProbe_1.probeAvailableFeatures)(account),
+        (0, accountProbe_1.probeWorkerPlan)(account),
+    ]);
+    const patch = {};
+    if (features)
+        patch.available_features = features;
+    if (plan)
+        patch.worker_plan = plan;
+    if (Object.keys(patch).length === 0)
+        return;
+    (0, account_1.updateAccount)(account.id, patch);
+    logger_1.appLogger.info(`[Account] Probed "${account.name}": features=${features || '(none)'}, worker_plan=${plan || '(kept)'}`);
+}
 const uploadCsv = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 router.get('/', (req, res, next) => {
     try {
@@ -96,7 +118,7 @@ router.post('/', async (req, res, next) => {
             res.status(400).json({ error: { code: 'CREDENTIAL_INVALID', message: `Cloudflare API 凭证验证失败: ${e.message || e}` } });
             return;
         }
-        const input = { name, auth_type, account_id, enabled_features: req.body.enabled_features, proxy_url: req.body.proxy_url, proxy_enabled: req.body.proxy_enabled };
+        const input = { name, auth_type, account_id, enabled_features: req.body.enabled_features, worker_plan: (0, account_2.normalizeWorkerPlan)(req.body.worker_plan), proxy_url: req.body.proxy_url, proxy_enabled: req.body.proxy_enabled };
         if (auth_type === 'token') {
             input.api_token = (0, encryptionService_1.encrypt)(api_token);
         }
@@ -125,14 +147,11 @@ router.post('/', async (req, res, next) => {
                 logger_1.appLogger.warn(`[Account] Failed to auto-fetch account_id for "${name}": ${e}`);
             }
         }
-        // 探测 R2 可用性（重新获取，account_id 可能刚被更新）
+        // 探测可用功能（R2…）与计划类型（订阅列表）：计划探测需 Billing 读权限，探测不到保留现有值
         try {
             const fresh = (0, account_1.getAccountById)(id);
-            if (fresh) {
-                const features = await (0, accountProbe_1.probeAvailableFeatures)(fresh);
-                if (features)
-                    (0, account_1.updateAccount)(id, { available_features: features });
-            }
+            if (fresh)
+                await probeAndStoreAccount(fresh);
         }
         catch (e) {
             logger_1.appLogger.warn(`[Account] Failed to probe features for "${name}": ${e}`);
@@ -174,6 +193,10 @@ router.put('/:id', async (req, res, next) => {
         }
         if (req.body.proxy_enabled !== undefined) {
             input.proxy_enabled = req.body.proxy_enabled;
+        }
+        // 计划类型（free / paid / enterprise）由人工标注，随时可改；缺省/非法值落回 free
+        if (req.body.worker_plan !== undefined) {
+            input.worker_plan = (0, account_2.normalizeWorkerPlan)(req.body.worker_plan);
         }
         if (auth_type === 'token') {
             if (switching && !api_token) {
@@ -248,15 +271,12 @@ router.put('/:id', async (req, res, next) => {
         }
         (0, accountRouter_1.clearCache)();
         (0, auditLog_1.createAuditLog)(id, 'update_account', name, `auth_type=${auth_type}`, 'success');
-        // 若提供了新凭证，探测可用付费功能（R2...），失败不阻断
+        // 若提供了新凭证，探测可用付费功能（R2…）与计划类型，失败不阻断
         if (input.api_token || input.api_key) {
             try {
                 const probed = (0, account_1.getAccountById)(id);
-                if (probed) {
-                    const features = await (0, accountProbe_1.probeAvailableFeatures)(probed);
-                    (0, account_1.updateAccount)(id, { available_features: features });
-                    logger_1.appLogger.info(`[Account] Probed features for "${name}": ${features}`);
-                }
+                if (probed)
+                    await probeAndStoreAccount(probed);
             }
             catch (e) {
                 logger_1.appLogger.warn(`[Account] Failed to probe features for "${name}": ${e}`);
@@ -385,14 +405,11 @@ router.post('/:id/test', async (req, res, next) => {
         }
         // 测试成功，更新状态为活跃
         (0, account_1.updateAccountStatus)(accountId, true);
-        // 探测 R2 可用性（重新获取，account_id 可能刚被更新）
+        // 探测可用功能（R2…）与计划类型（订阅列表）：计划探测需 Billing 读权限，探测不到保留现有值
         try {
             const fresh = (0, account_1.getAccountById)(accountId);
-            if (fresh) {
-                const features = await (0, accountProbe_1.probeAvailableFeatures)(fresh);
-                if (features)
-                    (0, account_1.updateAccount)(accountId, { available_features: features });
-            }
+            if (fresh)
+                await probeAndStoreAccount(fresh);
         }
         catch (e) {
             logger_1.appLogger.warn(`[Account] Failed to probe features for account ${accountId}: ${e}`);
@@ -465,14 +482,11 @@ router.post('/test-batch', async (req, res, next) => {
                     }
                 }
                 (0, account_1.updateAccountStatus)(account.id, true);
-                // 探测 R2 可用性（重新获取，account_id 可能刚被更新）
+                // 探测可用功能（R2…）与计划类型：计划探测需 Billing 读权限，探测不到保留现有值
                 try {
                     const fresh = (0, account_1.getAccountById)(account.id);
-                    if (fresh) {
-                        const features = await (0, accountProbe_1.probeAvailableFeatures)(fresh);
-                        if (features)
-                            (0, account_1.updateAccount)(account.id, { available_features: features });
-                    }
+                    if (fresh)
+                        await probeAndStoreAccount(fresh);
                 }
                 catch (e) {
                     logger_1.appLogger.warn(`[Account:TestBatch] Failed to probe features for "${account.name}": ${e}`);

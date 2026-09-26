@@ -13,6 +13,7 @@ exports.clearCache = clearCache;
 const node_cache_1 = __importDefault(require("node-cache"));
 const account_1 = require("../models/account");
 const cfFactory_1 = require("./cfFactory");
+const aiService_1 = require("./aiService");
 const quotaTracker_1 = require("./quotaTracker");
 const quotaUsage_1 = require("../models/quotaUsage");
 const logger_1 = require("./logger");
@@ -99,7 +100,16 @@ function getAiAccountSnapshot() {
 }
 async function selectBestAccount(resource, excludeIds, model) {
     if (resource === 'ai_neurons') {
-        const list = getAiAccountSnapshot();
+        const snapshot = getAiAccountSnapshot();
+        // 付费模型（require_workers_paid）只允许付费计划账号承接；未标注/标为 free 的账号不可用。
+        // 付费模型名单由 getAvailableModels 刷新（缓存未建立时 isPaidModelName 返回 false，行为不变）。
+        const list = (0, aiService_1.isPaidModelName)(model)
+            ? snapshot.filter(r => (0, account_1.isPaidPlan)(r.account.worker_plan))
+            : snapshot;
+        if (list.length === 0) {
+            logger_1.appLogger.warn(`[AccountRouter] Paid model "${model}" requested but no paid-plan account is available`);
+            return null;
+        }
         // 按实际用量 + 乐观预估量排序，避免并发选中同一账户
         list.sort((a, b) => (a.used + (a._optimistic || 0)) - (b.used + (b._optimistic || 0)));
         const best = list.find(r => !excludeIds?.has(r.account.id));

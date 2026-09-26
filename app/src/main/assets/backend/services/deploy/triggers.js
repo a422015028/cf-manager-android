@@ -10,8 +10,9 @@ const logger_1 = require("../logger");
 async function deployTriggers(account, scriptName, crons, routes) {
     const warnings = [];
     const accountId = account.account_id;
-    // 1. Cron Schedules（仅 Worker 脚本支持）
-    if (crons && crons.length > 0) {
+    // 1. Cron Schedules（仅 Worker 脚本支持）。只有模板显式提供 crons
+    // 时才替换列表；空数组用于清理旧触发器，undefined 表示保留现状。
+    if (crons !== undefined) {
         try {
             const cf = (0, cfFactory_1.getCfClient)(account);
             const res = await cf.workers.scripts.schedules.update(scriptName, {

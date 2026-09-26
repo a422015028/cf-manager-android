@@ -9,6 +9,7 @@ const account_1 = require("../models/account");
 const auditLog_1 = require("../models/auditLog");
 const logger_1 = require("../services/logger");
 const concurrent_1 = require("../utils/concurrent");
+const cronValidation_1 = require("../utils/cronValidation");
 const routeUtils_1 = require("./routeUtils");
 const workerService_1 = require("../services/workerService");
 const bindings_1 = require("../services/bindings");
@@ -193,12 +194,14 @@ router.put('/:accountId/workers/:name/schedules', async (req, res, next) => {
         const account = (0, routeUtils_1.getAccountOr404)(req, res);
         if (!account)
             return;
-        const { crons } = req.body;
-        if (!Array.isArray(crons)) {
-            res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'crons must be an array' } });
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const { crons } = body;
+        const normalizedCrons = (0, cronValidation_1.normalizeCronExpressions)(crons);
+        if (!normalizedCrons) {
+            res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'crons must be an array of valid five-field cron expressions' } });
             return;
         }
-        const result = await (0, workerService_1.updateSchedules)(account, req.params.name, crons);
+        const result = await (0, workerService_1.updateSchedules)(account, req.params.name, normalizedCrons);
         res.json(result);
     }
     catch (err) {

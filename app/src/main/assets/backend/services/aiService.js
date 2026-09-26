@@ -6,6 +6,9 @@ exports.resolveTtsSpeaker = resolveTtsSpeaker;
 exports.extractTtsAdvancedParams = extractTtsAdvancedParams;
 exports.buildTtsCfBody = buildTtsCfBody;
 exports.modelRequiresWorkersPaid = modelRequiresWorkersPaid;
+exports.cachePaidModelNames = cachePaidModelNames;
+exports.isPaidModelName = isPaidModelName;
+exports.clearPaidModelCache = clearPaidModelCache;
 exports.getAvailableModels = getAvailableModels;
 exports.getAiUsageToday = getAiUsageToday;
 const cfFactory_1 = require("./cfFactory");
@@ -176,6 +179,27 @@ function modelRequiresWorkersPaid(m) {
         return true;
     return false;
 }
+// ============ 付费模型名缓存 ============
+// require_workers_paid 只存在于 CF /ai/models/search 的模型元数据里，而账号路由层只拿到
+// 模型名字符串，所以刷新模型列表时顺带记下哪些模型是付费模型，供 selectBestAccount 过滤账号。
+const paidModelNames = new Set();
+/** 由模型列表刷新路径调用（getAvailableModels），用最新元数据重建付费模型名集合。 */
+function cachePaidModelNames(models) {
+    paidModelNames.clear();
+    for (const m of models) {
+        const name = m?.id || m?.name;
+        if (name && modelRequiresWorkersPaid(m))
+            paidModelNames.add(name);
+    }
+}
+/** 模型名是否为付费模型。缓存尚未建立时返回 false（保持既有行为，不做额外限制）。 */
+function isPaidModelName(name) {
+    return !!name && paidModelNames.has(name);
+}
+/** 清空付费模型名缓存（账号/配置变更时调用）。 */
+function clearPaidModelCache() {
+    paidModelNames.clear();
+}
 async function getAvailableModels(account, taskFilter) {
     if (!account.account_id) {
         throw new Error(`账户 "${account.name}" 缺少 Cloudflare Account ID，请点击"测试连接"以获取`);
@@ -191,6 +215,8 @@ async function getAvailableModels(account, taskFilter) {
     }
     const json = await resp.json();
     let models = Array.isArray(json?.result) ? json.result : [];
+    // 用「未经任务过滤的完整清单」刷新付费模型名缓存，供账号路由过滤付费模型使用
+    cachePaidModelNames(models);
     logger_1.appLogger.debug(`[AI Models] Total: ${models.length}`);
     // 如果指定了任务过滤，只返回匹配的模型
     if (taskFilter) {

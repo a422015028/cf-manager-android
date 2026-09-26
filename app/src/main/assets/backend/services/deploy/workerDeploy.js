@@ -4,6 +4,7 @@ exports.deployWorker = deployWorker;
 const headers_1 = require("./headers");
 const uploadForm_1 = require("./uploadForm");
 const assetsUpload_1 = require("./assetsUpload");
+const workerSubdomain_1 = require("../workerSubdomain");
 const logger_1 = require("../logger");
 const proxyService_1 = require("../proxyService");
 const CF_BASE = 'https://api.cloudflare.com/client/v4';
@@ -224,18 +225,14 @@ async function deployWorker(account, name, scriptContent, workerInit, options) {
         catch {
             // Soft fail
         }
-        // Get account-level subdomain
-        try {
-            const subResp = await (0, proxyService_1.proxyFetch)(`${CF_BASE}/accounts/${accountId}/workers/subdomain`, {
-                headers: { 'Content-Type': 'application/json', ...deployHeaders },
-            }, 30000, undefined, account);
-            if (subResp.ok) {
-                const subJson = await subResp.json();
-                subdomain = subJson?.result?.subdomain;
-            }
+        // 账号级 workers.dev 子域名：账号没注册过就自动注册（全局唯一，撞名会自动回退随机后缀）。
+        // 失败不阻断部署，但必须记日志 —— 否则用户会碰到"部署成功但 *.workers.dev 打不开"。
+        const ensured = await (0, workerSubdomain_1.ensureAccountSubdomain)(account);
+        if (ensured.subdomain) {
+            subdomain = ensured.subdomain;
         }
-        catch {
-            // Soft fail
+        else if (ensured.error) {
+            logger_1.appLogger.warn(`[Worker Deploy] workers.dev subdomain unavailable for "${account.name}": ${ensured.error}`);
         }
     }
     return { script: respJson.result, subdomain, versionId };

@@ -1,8 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ALL_FEATURES = void 0;
+exports.WORKER_PLANS = exports.ALL_FEATURES = void 0;
+exports.isPaidPlan = isPaidPlan;
+exports.normalizeWorkerPlan = normalizeWorkerPlan;
 exports.hasFeature = hasFeature;
 exports.getActiveAccountsByFeature = getActiveAccountsByFeature;
+exports.hasPaidAccountByFeature = hasPaidAccountByFeature;
 exports.getAllAccounts = getAllAccounts;
 exports.listAccountsPaged = listAccountsPaged;
 exports.getActiveAccounts = getActiveAccounts;
@@ -17,12 +20,31 @@ exports.getAccountByEmail = getAccountByEmail;
 exports.nameFromEmail = nameFromEmail;
 const db_1 = require("../db");
 exports.ALL_FEATURES = ['ai', 'workers', 'browser_render', 'dns', 'storage'];
+exports.WORKER_PLANS = ['free', 'paid', 'enterprise'];
+/**
+ * 账号是否属于付费计划（可承接 require_workers_paid 的付费模型）。
+ * 未标注（'' / undefined）与 'free' 一律按免费处理 —— 「不标就是免费」。
+ */
+function isPaidPlan(plan) {
+    return plan === 'paid' || plan === 'enterprise';
+}
+/** 规范化用户传入的计划值，非法值一律落回 'free'。 */
+function normalizeWorkerPlan(plan) {
+    return plan === 'paid' || plan === 'enterprise' ? plan : 'free';
+}
 function hasFeature(account, feature) {
     const features = (account.enabled_features || exports.ALL_FEATURES.join(',')).split(',');
     return features.includes(feature);
 }
 function getActiveAccountsByFeature(feature) {
     return getActiveAccounts().filter(a => hasFeature(a, feature));
+}
+/**
+ * 该能力下是否存在付费计划（paid / enterprise）活跃账号。
+ * 用于决定付费模型（require_workers_paid）是否可以路由、以及要不要在模型列表里隐藏它们。
+ */
+function hasPaidAccountByFeature(feature) {
+    return getActiveAccountsByFeature(feature).some(a => isPaidPlan(a.worker_plan));
 }
 function getAllAccounts() {
     return (0, db_1.getDb)().prepare('SELECT * FROM accounts ORDER BY created_at DESC').all();
@@ -69,8 +91,8 @@ function getAccountById(id) {
 }
 function createAccount(input) {
     const features = input.enabled_features || exports.ALL_FEATURES.join(',');
-    const stmt = (0, db_1.getDb)().prepare('INSERT INTO accounts (name, auth_type, api_token, api_key, email, account_id, enabled_features, proxy_url, proxy_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    const result = stmt.run(input.name, input.auth_type, input.api_token || null, input.api_key || null, input.email || null, input.account_id || null, features, input.proxy_url || '', input.proxy_enabled ?? 0);
+    const stmt = (0, db_1.getDb)().prepare('INSERT INTO accounts (name, auth_type, api_token, api_key, email, account_id, enabled_features, worker_plan, proxy_url, proxy_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(input.name, input.auth_type, input.api_token || null, input.api_key || null, input.email || null, input.account_id || null, features, normalizeWorkerPlan(input.worker_plan), input.proxy_url || '', input.proxy_enabled ?? 0);
     return result.lastInsertRowid;
 }
 function updateAccount(id, input) {
@@ -84,6 +106,7 @@ function updateAccount(id, input) {
         email: 'email',
         account_id: 'account_id',
         available_features: 'available_features',
+        worker_plan: 'worker_plan',
         proxy_url: 'proxy_url',
         proxy_enabled: 'proxy_enabled',
     };
