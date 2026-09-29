@@ -19,8 +19,8 @@ android {
         applicationId "com.cfmanager.app"
         minSdk 24
         targetSdk 36
-        versionCode 6
-        versionName "2.3.0-ad76977"
+        versionCode 7
+        versionName "2.4.0-960e31b"
         ndk {
             abiFilters "arm64-v8a"
         }
