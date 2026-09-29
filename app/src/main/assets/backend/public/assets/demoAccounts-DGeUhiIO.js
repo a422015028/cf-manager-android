@@ -1,1 +1,0 @@
-import{Ha as e}from"./client-ChP91Rvb.js";import{t}from"./accounts-DLUn0vAP.js";var n=e([]),r=!1;async function i(){if(!r){try{let{data:e}=await t.getAll();n.value=e.accounts||[]}catch{n.value=[]}r=!0}}function a(e){return e==null?!1:n.value.some(t=>t.id===e&&t.is_demo)}export{i as n,a as t};
